@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from ictus.graph.signals import RunSignal
 
-__all__ = ["EnvVar", "Executable", "Integration", "McpServer", "McpTransport"]
+__all__ = ["Datasource", "EnvVar", "Executable", "Integration", "McpServer", "McpTransport"]
 
 
 class McpTransport(StrEnum):
@@ -177,6 +177,31 @@ class Integration:
     sequence rather than a broken reference to a parent that never existed.
     """
 
+    announces: bool = True
+    """Whether its program sends a *report* — free text, optionally under a
+    parent, optionally carrying buttons."""
+
+    comments: bool = False
+    """Whether its program adds a *remark to a named item* — a ticket, an issue,
+    a pull request — addressed by something the graph carries.
+
+    Separate from ``announces`` because the two programs are handed different
+    things, and an integration built for one driven by a step built for the
+    other would be passed arguments in positions that mean something else. The
+    flags make that a refusal while the pipeline is being written; without them
+    it is a report that silently goes nowhere."""
+
+    listens: bool = False
+    """Whether a run can be *started* from this destination as well as reported
+    to it.
+
+    Not the same capability: sending a report needs somewhere to post, and
+    waiting for one needs a connection held open and a credential that permits
+    it. A destination that can only be written to is refused by ``listen_on``
+    while the pipeline is being written, rather than by a listener that starts,
+    reports itself as listening, and never fires.
+    """
+
     setup_hint: str = ""
 
     def __post_init__(self) -> None:
@@ -207,3 +232,59 @@ class Integration:
     def wants(self, signal: RunSignal) -> bool:
         """Whether this integration asked to hear about ``signal``."""
         return signal in self.reports
+
+
+@dataclass(frozen=True, slots=True)
+class Datasource:
+    """Somewhere a pipeline reads data *from*, declared where it is written.
+
+    The same air gap as ``Integration``, one axis over. Nothing in the
+    composition model knows Postgres, or any other engine, exists: this holds
+    the shape — what it is called, why it is there, what the environment must
+    supply, and an opaque program that runs one statement and prints what came
+    back. Which engine that is lives behind ``ictus.sources``, and a second one
+    is a new module there rather than a new branch anywhere else.
+
+    Separate from ``Integration`` because it is the other direction. An
+    integration is an audience and is told things; a datasource is asked things
+    and answers. Conflating them would put ``reports`` and ``threads`` on a
+    database, and a query on a channel.
+
+    ``read_only`` is a claim about the *connection*, not about the statement.
+    It travels with the declaration so a step that must not write can refuse a
+    connection that could, at the point the pipeline is written rather than at
+    the point somebody's generated SQL reaches a production table.
+    """
+
+    name: str
+    purpose: str
+    env: tuple[EnvVar, ...] = ()
+    read_only: bool = False
+    command: str = "python3"
+    program: str = ""
+    """How one statement is run. Opaque here, and never read above ``sources``."""
+
+    needs: tuple[Executable, ...] = ()
+    """Commands the program shells out to, so preflight can refuse a machine
+    without them instead of a step discovering it mid-run."""
+
+    setup_hint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise CompositionError("a datasource needs a name")
+        if not self.purpose:
+            raise CompositionError(
+                f"datasource {self.name!r} needs a purpose; it is what the person "
+                "being asked to configure it will read"
+            )
+        if not self.program:
+            raise CompositionError(
+                f"datasource {self.name!r} has no program, so it could never read "
+                "anything. Build it with one of the constructors in ictus.sources."
+            )
+
+    @property
+    def required_env(self) -> tuple[EnvVar, ...]:
+        """Environment variables that must be set for this to work."""
+        return self.env

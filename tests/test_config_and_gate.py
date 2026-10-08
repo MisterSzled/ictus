@@ -16,7 +16,7 @@ import pytest
 
 from ictus import END, AgentNode, InputPort, OutputPort, Pipeline, PortType, tpl
 from ictus.baseline import AGENT_BASELINE
-from ictus.config import MINIMAL, ConfigError, read_config
+from ictus.config import MINIMAL, ConfigError, PipelineConfig, read_config
 from ictus.errors import CompositionError
 from ictus.gate import CANCELLED_ID, GATE_ID, add_start_gate
 from ictus.graph.mapping import Item
@@ -514,3 +514,77 @@ class TestBaselineDiscipline:
         assert "Send independent lookups together" in AGENT_BASELINE
         assert "Grep" not in AGENT_BASELINE
         assert "Glob" not in AGENT_BASELINE
+
+
+def test_a_budget_mode_in_composition_survives_a_config_that_is_silent() -> None:
+    """It used to be overwritten rather than conflicted with, so every pipeline
+    asking for `enforce` emitted `audit` and nothing said so. The budget was
+    recorded and never enforced on any of them."""
+    pipeline = Pipeline(pipeline_id="p", budget_usd=1.0, budget_mode="enforce")
+    PipelineConfig(provider="claude-agent-sdk").apply(pipeline, where="config.yaml")
+    assert pipeline.budget_mode == "enforce"
+
+
+def test_a_config_that_disagrees_about_the_budget_mode_says_so() -> None:
+    """Reported like every other policy field, rather than resolved in silence."""
+    pipeline = Pipeline(pipeline_id="p", budget_usd=1.0, budget_mode="enforce")
+    config = PipelineConfig(provider="claude-agent-sdk", budget_mode="audit")
+    with pytest.raises(ConfigError, match="budget_mode"):
+        config.apply(pipeline, where="config.yaml")
+
+
+def test_a_config_may_still_set_the_budget_mode() -> None:
+    pipeline = Pipeline(pipeline_id="p", budget_usd=1.0)
+    PipelineConfig(provider="claude-agent-sdk", budget_mode="enforce").apply(
+        pipeline, where="config.yaml"
+    )
+    assert pipeline.budget_mode == "enforce"
+
+
+# --- native_tools as a list: reading without a shell --------------------------
+
+
+def test_a_tool_list_is_read_from_config() -> None:
+    """`claude_code` grants a shell along with the reading. Naming the tools is
+    how a step gets to look at a repository without being able to run it."""
+    config = read_config_text("provider: claude-agent-sdk\nnative_tools: [Read, Grep, Glob]\n")
+    assert config.native_tools == ("Read", "Grep", "Glob")
+
+
+def test_an_empty_tool_list_is_refused() -> None:
+    """Granting nothing is spelled `none`; an empty list reads as half-written."""
+    with pytest.raises(ConfigError, match="empty list"):
+        read_config_text("provider: claude-agent-sdk\nnative_tools: []\n")
+
+
+def test_the_two_words_still_work() -> None:
+    assert read_config_text("provider: claude-agent-sdk\n").native_tools == "none"
+    assert (
+        read_config_text("provider: claude-agent-sdk\nnative_tools: claude_code\n").native_tools
+        == "claude_code"
+    )
+
+
+def test_a_tool_list_is_emitted_as_a_list() -> None:
+    """A tuple is how ictus keeps a pipeline hashable, not the engine's spelling."""
+    pipeline = Pipeline(pipeline_id="p", provider="claude-agent-sdk")
+    pipeline.native_tools = ("Read", "Grep", "Glob")
+    pipeline.add(AgentNode(node_id="only", prompt="x"))
+    pipeline.set_entry(pipeline.nodes[0])
+    workflow = conductor.document(pipeline)["workflow"]
+    assert isinstance(workflow, dict)
+    runtime = workflow["runtime"]
+    assert isinstance(runtime, dict)
+    block = runtime["provider"]
+    assert isinstance(block, dict)
+    assert block["native_tools"] == ["Read", "Grep", "Glob"]
+
+
+def read_config_text(text: str) -> PipelineConfig:
+    """Parse config text the way a folder's `config.yaml` is parsed."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as into:
+        path = Path(into) / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        return read_config(path)

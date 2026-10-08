@@ -26,6 +26,7 @@ from ictus.lint.rules import (
     placeholder_problems,
     previous_pass_problems,
     stage_contract_problems,
+    undeclared_use_problems,
 )
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ def lint_pipeline(
     *,
     backend: Backend | None = None,
     _seen: set[str] | None = None,
+    _declared: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Every violation in ``pipeline`` and its nested stages.
 
@@ -63,6 +65,7 @@ def lint_pipeline(
 
     problems: list[str] = placeholder_problems(pipeline, where)
     problems.extend(previous_pass_problems(pipeline, where))
+    problems.extend(undeclared_use_problems(pipeline, where, _declared))
     reachable = pipeline.reachable_from_entry()
     problems.extend(
         f"{where}: {describe(node)} is unreachable from entry point "
@@ -76,12 +79,16 @@ def lint_pipeline(
     for group in collections:
         problems.extend(group_routing_problems(pipeline, group, where))
 
+    # A stage is part of its caller's run, so what the caller announced is
+    # announced for it too.
+    visible = _declared | {service.name for service in pipeline.integrations}
+    visible |= {source.name for source in pipeline.datasources}
     by_id = {n.node_id: n for n in pipeline.nodes}
     for host_id, child in pipeline.children.items():
         host = by_id.get(host_id)
         if isinstance(host, SubGraphNode):
             problems.extend(stage_contract_problems(where, host, child))
-        problems.extend(lint_pipeline(child, backend=backend, _seen=seen))
+        problems.extend(lint_pipeline(child, backend=backend, _seen=seen, _declared=visible))
 
     if backend is not None:
         problems.extend(capability_problems(pipeline, backend.capabilities(), where))

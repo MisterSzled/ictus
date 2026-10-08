@@ -25,6 +25,7 @@ from ictus.integrate import apply_integrations
 from ictus.interfaces.conductor import conductor
 from ictus.interfaces.conductor.events import history, step_outputs
 from ictus.interfaces.conductor.events import watch as watch_run
+from ictus.interfaces.conductor.manifest import SUFFIX as MANIFEST_SUFFIX
 from ictus.interfaces.conductor.runs import LiveRun, live_runs
 from ictus.interfaces.conductor.trace import LOG_DIR, find_logs, read_trace
 from ictus.lint import lint_pipeline
@@ -39,6 +40,8 @@ from ictus.notify.slack.listen import (
     say,
     verdict,
 )
+from ictus.notify.slack.send import reply
+from ictus.notify.slack.trigger import Asked, start, triggers_in
 from ictus.runspec import PipelineFolder, read_input_file
 from ictus.scaffold import STARTER_INPUT, STARTER_PIPELINE
 
@@ -240,10 +243,16 @@ def _write(pipeline: Pipeline, out: Path) -> list[_Written]:
 
 
 def _prune(destination: Path, keep: set[Path]) -> list[Path]:
-    """Delete YAML in ``destination`` that no pipeline claims."""
+    """Delete compiled output in ``destination`` that no pipeline claims.
+
+    Manifests as well as workflows: deleting a ``listen_on`` line has to stop
+    the listener starting that pipeline, and a stale manifest left behind would
+    go on matching messages against a prefix nothing declares any more.
+    """
     if not destination.is_dir():
         return []
-    stale = sorted(set(destination.glob("*.yaml")) - keep)
+    compiled = set(destination.glob("*.yaml")) | set(destination.glob(f"*{MANIFEST_SUFFIX}"))
+    stale = sorted(compiled - keep)
     for path in stale:
         path.unlink()
     return stale
@@ -293,17 +302,26 @@ def emit(
     if not pipelines:
         _fail(f"no pipelines found in {where} (nothing was emitted)")
 
-    seen: dict[str, str] = {}
+    # Keyed by where a file would land, not by its name. Two pipelines in their
+    # own folders may both place `read.yaml` in their own `build/`, and that is
+    # the ordinary consequence of reusing a stage — refusing it would make a
+    # stdlib stage usable in one pipeline per repository. Only `--out`, which
+    # gathers everything into one directory, can make two names actually
+    # collide, and there the clash is real.
+    seen: dict[tuple[Path, str], str] = {}
     problems: list[str] = []
-    for pipeline in pipelines:
-        for document in BACKEND.compile(pipeline):
-            owner = seen.get(document.filename)
-            if owner is not None:
-                problems.append(
-                    f"{document.filename} is claimed by both {owner!r} and {pipeline.pipeline_id!r}"
-                )
-            seen[document.filename] = pipeline.pipeline_id
-        problems.extend(lint_pipeline(pipeline, backend=BACKEND))
+    for destination, group in targets:
+        for pipeline in group:
+            for document in BACKEND.compile(pipeline):
+                where_it_lands = (destination, document.filename)
+                owner = seen.get(where_it_lands)
+                if owner is not None:
+                    problems.append(
+                        f"{destination / document.filename} is claimed by both {owner!r} "
+                        f"and {pipeline.pipeline_id!r}"
+                    )
+                seen[where_it_lands] = pipeline.pipeline_id
+            problems.extend(lint_pipeline(pipeline, backend=BACKEND))
     _refuse_problems(problems, consequence="nothing was written")
 
     written: list[_Written] = []
@@ -321,8 +339,13 @@ def emit(
             pruned.extend(_prune(destination, keep))
 
     _report_written(written, pruned)
+    # Manifests are not workflows, and counting them as such reads as a stage
+    # nobody wrote.
+    workflows = sum(1 for item in written if item.path.suffix == ".yaml")
+    listening = len(written) - workflows
+    tail = f", {listening} listening" if listening else ""
     typer.secho(
-        f"{len(written)} workflow(s) from {len(pipelines)} pipeline(s)", fg=typer.colors.GREEN
+        f"{workflows} workflow(s) from {len(pipelines)} pipeline(s){tail}", fg=typer.colors.GREEN
     )
 
 
@@ -378,7 +401,8 @@ def preflight(
         declared = pipeline.all_mcp_servers()
         commands = pipeline.all_executables()
         reporting = pipeline.all_integrations()
-        total = len(declared) + len(commands) + len(reporting)
+        reading = pipeline.all_datasources()
+        total = len(declared) + len(commands) + len(reporting) + len(reading)
         typer.echo(f"{pipeline.pipeline_id}: {total} requirement(s) declared")
         for server in declared:
             typer.echo(f"  - mcp:{server.name} — {server.purpose}")
@@ -386,6 +410,9 @@ def preflight(
             typer.echo(f"  - exe:{tool.name} — {tool.purpose}")
         for service in reporting:
             typer.echo(f"  - integrate:{service.name} — {service.purpose}")
+        for source in reading:
+            access = "read-only" if source.read_only else "WRITABLE"
+            typer.echo(f"  - read:{source.name} ({access}) — {source.purpose}")
         issues.extend(BACKEND.preflight(pipeline, probe=probe))
     _report_preflight(issues, probed=probe)
     if any(i.blocking for i in issues):
@@ -630,20 +657,22 @@ def run(
     except FileNotFoundError as exc:
         _fail(str(exc))
         return
-    _report_activity(pipeline.pipeline_id, background=background)
+    _report_activity(pipeline.pipeline_id, folder, background=background)
     raise typer.Exit(code=code)
 
 
-def _report_activity(workflow: str, *, background: bool) -> None:
+def _report_activity(workflow: str, folder: Path, *, background: bool) -> None:
     """Say which steps answered without looking at anything.
 
     A run's exit code says whether it finished, not whether it thought. The
     engine already records every tool call; not reading them back is how a
     council shipped a report whose findings nobody had checked. A background run
-    is still going, so it gets the command instead of the answer.
+    is still going, so it gets the command instead of the answer — naming the
+    folder, because that is what `ictus trace` takes and the workflow's own
+    name is the thing somebody would otherwise type.
     """
     if background:
-        typer.secho(f"\nwhen it finishes: ictus trace {workflow}", fg=typer.colors.BRIGHT_BLACK)
+        typer.secho(f"\nwhen it finishes: ictus trace {folder}", fg=typer.colors.BRIGHT_BLACK)
         return
     found = find_logs(workflow)
     if not found:
@@ -742,7 +771,13 @@ def trace(
     if log is not None:
         path = log
     else:
-        located = PipelineFolder.at(folder or Path())
+        try:
+            located = PipelineFolder.at(folder or Path())
+        except IctusError as exc:
+            # `ictus trace asked` is the natural thing to type and it takes a
+            # folder, so the wrong guess deserves a line rather than a traceback.
+            _fail(f"{exc}. This takes a pipeline folder, not a workflow name.")
+            return
         pipeline = _only(located)
         ceilings = _declared_ceilings(pipeline)
         found = find_logs(pipeline.pipeline_id)
@@ -1014,6 +1049,10 @@ LISTEN_WORKERS = 4
 
 @app.command()
 def listen(
+    where: Annotated[
+        Path | None,
+        typer.Argument(help="A built pipeline folder, or a directory of them, to start runs from"),
+    ] = None,
     allow: Annotated[
         list[str] | None,
         typer.Option("--allow", help="Slack user id that may answer; repeatable"),
@@ -1057,19 +1096,76 @@ def listen(
         )
         return
     permitted = frozenset(allow or ())
+    watching = triggers_in(where) if where is not None else []
+    if where is not None and not watching:
+        _fail(
+            f"no manifests under {where}. A pipeline is startable from a channel once it "
+            "declares `listen_on(...)` and has been emitted; without that this would "
+            "listen for a prefix nothing claims."
+        )
     typer.secho(
         "listening for button presses"
         + (f"; only {', '.join(sorted(permitted))} may answer" if permitted else ""),
         fg=typer.colors.CYAN,
     )
+    for trigger in watching:
+        typer.secho(
+            f'starting {trigger.pipeline or trigger.workflow.name} on "{trigger.prefix} ..."',
+            fg=typer.colors.CYAN,
+        )
+        # At startup, not at the first message: a listener that looks healthy
+        # for a week and then says in public that it cannot start the thing
+        # somebody just asked for is the failure this is here to prevent.
+        for gap in trigger.missing():
+            typer.secho(f"  warn  {gap}", fg=typer.colors.YELLOW)
+    seen: set[str] = set()
     with ThreadPoolExecutor(max_workers=LISTEN_WORKERS) as pool:
         try:
-            for event in presses(token):
+            for event in presses(token, triggers=watching):
+                if isinstance(event, Asked):
+                    # Slack redelivers what it thinks was not acknowledged, and a
+                    # redelivery reads exactly like somebody asking twice.
+                    if event.thread in seen or event.trigger is None:
+                        continue
+                    seen.add(event.thread)
+                    pool.submit(_handle_ask, event, bot)
+                    continue
                 pool.submit(_handle_press, event, permitted, bot)
         except KeyboardInterrupt:
             typer.secho("\nstopped listening; the runs are untouched", fg=typer.colors.BRIGHT_BLACK)
         except SlackError as exc:
             _fail(str(exc))
+
+
+def _handle_ask(request: Asked, bot: str) -> None:
+    """Start a run for one request, and say in its thread what became of it.
+
+    The acknowledgement is the point. Starting a run takes long enough that
+    silence reads as a bot that is not listening, and a refusal — preflight, a
+    missing credential — is something the person who asked can act on.
+    """
+    typer.echo(f"  ask from {request.who}: {request.question[:60]}")
+    if request.trigger is None:  # pragma: no cover - the caller already checked
+        return
+    started = start(request, request.trigger)
+    line = (
+        f"Working on it — <@{request.who}> asked about *{request.question[:120]}*"
+        if started.ok
+        else f"Could not start: {started.why}"
+    )
+    if started.dashboard:
+        # The only moment anybody can learn it: the port is assigned when the
+        # run binds, and the run outlives the command that printed it.
+        line += f"\n{started.dashboard}"
+    typer.secho(
+        f"    -> {line.splitlines()[0]}",
+        fg=typer.colors.BRIGHT_BLACK if started.ok else typer.colors.RED,
+    )
+    if started.dashboard:
+        typer.secho(f"    -> {started.dashboard}", fg=typer.colors.CYAN)
+    said = reply(token=bot, channel=request.channel, thread_ts=request.thread, text=line)
+    if said:
+        typer.secho(f"    -> could not say so in the thread: {said}", fg=typer.colors.RED)
 
 
 def _handle_press(event: Click | Note, permitted: frozenset[str], bot: str) -> None:

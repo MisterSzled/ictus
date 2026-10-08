@@ -45,6 +45,9 @@ No provider call, still 1 iteration each.
 | `bindings` | Several named values at once | `values`, `outputs` | one port per declared output |
 | `counter` | Count passes through a point, from one | — | `value: number` |
 | `announce` | Report to an integration from inside the graph | `text`, `to`, `thread`, `answers`, `inputs`, `timeout` | `thread`, `posted` |
+| `comment` | Add a remark to an item an integration names — a ticket, an issue | `on`, `body`, `to`, `inputs`, `timeout` | `issue`, `posted`, `why` |
+| `fetch` | Ask a read-only datasource for one named thing — a ticket, by key or link | `what`, `against`, `inputs`, `timeout` | `found`, `got`, `why` |
+| `query` | Ask a read-only datasource one statement | `sql`, `against`, `environment`, `limit`, `inputs`, `timeout` | `rows`, `count`, `ran`, `why` |
 | `save_text` | Write a value another step produced to a file | `text`, `to`, `append`, `working_dir` | `path: string` |
 | `shell` | Run a command | `command`, `args`, `outputs`, `stdin`, `timeout`, `working_dir`, `enforce_outputs` | whatever `outputs` declares |
 | `wait` | Pause | `seconds`, `reason` | — |
@@ -113,6 +116,8 @@ composition.
 | --- | --- | --- | --- | --- |
 | `try_shell` | Run one command whose failure the caller routes on | `command`, `args`, `parameter`, `outputs`, `stdin`, `timeout`, `working_dir`, `node_id` | `ok`, `failed` | `stdout`, `stderr`, `exit_code` |
 | `converge` | Bounded try/judge loop; running out is a value, not a crash | `attempt`, `judge`, `judge_prompt`, `verdict_port`, `passes`, `pause_between` | `converged`, `exhausted` | the attempt's outputs, `feedback`, `passes` |
+| `read_ticket` | Read one ticket through a read-only source, holding its credential inside the stage | `against`, `timeout`, `subject` | `read`, `missing` | `ticket`, `why` |
+| `investigate` | Bounded look/ask loop against a read-only datasource; the thinking step has no tools and can only request a statement | `against`, `looks`, `reasoning`, `model`, `max_turns`, `limit`, `timeout`, `remember`, `may_read_files`, `environment`, `subject` | `answered`, `exhausted` | `answer`, `looks`, `last_sql` |
 | `roundtable` | Several people taking turns, in order, until they agree | `speakers`, `subject`, `charge`, `rounds`, `study`, `interject`, `remember`, `closing` | `agreed`, `unresolved`, `halted` (with `interject`) | `minutes`, `dissent`, `rounds` |
 | `council` | Several standpoints deliberating until they agree on a report | `voices`, `subject`, `charge`, `rounds`, `interject`, `deliberate`, `verify`, `verify_each`, `verify_turns`, `remember`, `synthesis` | `agreed`, `unresolved`, `halted` (with `interject`) | `report`, `dissent`, `unverified`, `rounds`, `corrections` |
 

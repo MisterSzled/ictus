@@ -33,7 +33,7 @@ from ictus.graph.ref import Origin, Ref, Template, equals
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from ictus.graph.requirements import Executable, Integration, McpServer
+    from ictus.graph.requirements import Datasource, Executable, Integration, McpServer
     from ictus.graph.signals import RunSignal
     from ictus.graph.values import YamlScalar
 
@@ -43,6 +43,10 @@ _STRUCTURED = frozenset({PortType.OBJECT, PortType.ARRAY})
 _GROUPABLE = frozenset({NodeKind.LLM_CALL, NodeKind.COMPUTATION})
 
 ContextMode = Literal["accumulate", "last_only", "explicit"]
+#: What built-in tools a step that names none of its own is given. ``none``,
+#: everything the CLI can do, or exactly the tool ids listed — which is the one
+#: that lets a step read a repository without also being handed a shell.
+NativeTools = Literal["none", "claude_code"] | tuple[str, ...]
 BudgetMode = Literal["audit", "enforce"]
 
 
@@ -133,6 +137,31 @@ class WorkflowInput:
             origin=Origin.WORKFLOW_INPUT,
             source=self,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Listener:
+    """What wakes a pipeline, declared beside what it reports to.
+
+    The other half of ``integrate``. A pipeline that announces into a channel
+    but is started by a flag somebody typed is only half written down: a reader
+    can see where it will talk and not what makes it run, and the two have to
+    agree about which input carries the conversation.
+
+    Compiled into a manifest beside the workflow, so what starts a run ships
+    with the run and is reviewed in the same diff.
+    """
+
+    service: Integration
+    prefix: str
+    """What marks a message as a request rather than conversation."""
+
+    into: WorkflowInput
+    """The input the text after the prefix arrives in."""
+
+    thread: WorkflowInput | None = None
+    """Where the conversation is addressed, taken from the same service's
+    ``integrate``. ``None`` when the pipeline reports nowhere."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -254,6 +283,14 @@ class Pipeline:
         # copilot before.
         self.provider = provider
         self.default_model = default_model
+        self.native_tools: NativeTools | None = None
+        """Whether a step that names no tools gets the engine's built-in set.
+
+        Off unless asked for. A step with no ``tools`` used to be handed the
+        filesystem, a shell and the web without the pipeline ever saying so,
+        which Conductor closed — and closing it means a step that was reading
+        files now quietly answers from memory instead. Set it where the policy
+        lives, so the diff shows which pipelines can touch a disk."""
         self.context_mode: ContextMode = context_mode
         self.context_max_tokens = context_max_tokens
         """A soft ceiling on accumulated context, above which the engine trims.
@@ -307,6 +344,18 @@ class Pipeline:
         self._mcp: dict[str, McpServer] = {}
         self._executables: dict[str, Executable] = {}
         self._integrations: dict[str, Integration] = {}
+        self._threads: dict[str, WorkflowInput] = {}
+        self._listeners: dict[str, Listener] = {}
+        self._datasources: dict[str, Datasource] = {}
+        self.workspace_instructions = True
+        """Whether a run is given what the working directory says about itself.
+
+        Policy, set from ``config.yaml``, and it travels in the listen manifest
+        because the process that starts a run is the one that has to pass the
+        flag. On by default: a step otherwise arrives knowing nothing a project
+        says about how it wants to be worked in. Off for a pipeline whose work
+        is not *about* the directory it runs in — a tracker ticket does not want
+        a contributor guide prepended to every prompt."""
         self._before_start: Node | None = None
         self._entry: RouteEnd | None = None
 
@@ -520,6 +569,43 @@ class Pipeline:
                 seen.setdefault(tool.name, tool)
         return tuple(seen.values())
 
+    def require_datasource(self, source: Datasource) -> Datasource:
+        """Declare somewhere this pipeline reads data from.
+
+        Beside ``require_executable`` and ``integrate``, and for the same
+        reason: a reader should see what a run reaches outside the machine
+        before they read what it does, and a connection string that is not set
+        should refuse the launch rather than fail a step that has already been
+        paid for.
+
+        The commands the source needs are declared with it, so a machine
+        without them is refused by the same preflight and nobody has to
+        remember that one implies the other.
+        """
+        existing = self._datasources.get(source.name)
+        if existing is not None:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} already reads from something called "
+                f"{source.name!r}; names are how one is addressed and must be unique"
+            )
+        self._datasources[source.name] = source
+        for tool in source.needs:
+            self._executables.setdefault(tool.name, tool)
+        return source
+
+    @property
+    def datasources(self) -> tuple[Datasource, ...]:
+        """Every source this pipeline declares, in declaration order."""
+        return tuple(self._datasources.values())
+
+    def all_datasources(self) -> tuple[Datasource, ...]:
+        """This pipeline's sources and those of every stage it contains."""
+        seen: dict[str, Datasource] = dict(self._datasources)
+        for child in self._children.values():
+            for source in child.all_datasources():
+                seen.setdefault(source.name, source)
+        return tuple(seen.values())
+
     def all_mcp_servers(self) -> tuple[McpServer, ...]:
         """This pipeline's servers and those of every stage it contains.
 
@@ -560,8 +646,14 @@ class Pipeline:
         """What runs before the start gate, if anything was asked to."""
         return self._before_start
 
-    def integrate(self, service: Integration) -> Integration:
+    def integrate(
+        self, service: Integration, *, thread: WorkflowInput | None = None
+    ) -> Integration:
         """Declare a third-party service this pipeline talks to.
+
+        ``thread`` says the conversation is already open and names the input it
+        arrives in — a run started *by* a message reports under that message
+        rather than beside it. Without one a run opens its own.
 
         Put these at the top of a pipeline. A reader should see what a run will
         reach outside the machine before they read what it does, and whoever
@@ -578,8 +670,84 @@ class Pipeline:
                 f"pipeline {self.pipeline_id!r} already integrates something called "
                 f"{service.name!r}; names are how one is addressed and must be unique"
             )
+        if thread is not None:
+            if self._inputs.get(thread.name) is not thread:
+                raise CompositionError(
+                    f"pipeline {self.pipeline_id!r} reports into {thread.name!r}, which it "
+                    "does not declare as an input; declare_input it first"
+                )
+            if thread.port_type is not PortType.STRING:
+                raise CompositionError(
+                    f"pipeline {self.pipeline_id!r} reports into {thread.name!r}, which is "
+                    f"{thread.port_type.value}; a conversation is addressed by a string"
+                )
+            self._threads[service.name] = thread
         self._integrations[service.name] = service
         return service
+
+    def listen_on(self, service: Integration, *, prefix: str, into: WorkflowInput) -> Listener:
+        """Declare that a message on ``service`` starts this pipeline.
+
+        ``prefix`` is what marks a message as a request; whatever follows it
+        becomes ``into``. The conversation comes from the same service's
+        ``integrate(thread=...)``, so the run reports under the message that
+        started it without the two being named separately and drifting apart.
+
+        Put it beside ``integrate``. A reader should see what wakes a run in
+        the same place they see what it talks to, and a listener should not
+        need flags that repeat what the pipeline already knows.
+        """
+        if service.name not in self._integrations:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} listens on {service.name!r} without "
+                "integrating it; integrate() it first so one declaration says both "
+                "what starts a run and where it reports"
+            )
+        if not service.listens:
+            raise CompositionError(
+                f"integration {service.name!r} cannot be listened on — it can only be "
+                "written to. Use a constructor that holds a credential for waiting, "
+                "or start this pipeline some other way"
+            )
+        if not prefix.strip():
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} listens on {service.name!r} with a blank "
+                "prefix, which every message matches"
+            )
+        existing = self._listeners.get(service.name)
+        if existing is not None:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} already listens on {service.name!r}; "
+                "one service starts it one way"
+            )
+        if self._inputs.get(into.name) is not into:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} listens into {into.name!r}, which it does "
+                "not declare as an input; declare_input it first"
+            )
+        if into.port_type is not PortType.STRING:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} listens into {into.name!r}, which is "
+                f"{into.port_type.value}; what somebody types is a string"
+            )
+        thread = self._threads.get(service.name)
+        if thread is not None and thread.name == into.name:
+            raise CompositionError(
+                f"pipeline {self.pipeline_id!r} would put the question and the "
+                f"conversation both in {into.name!r}; they are two values"
+            )
+        listener = Listener(service=service, prefix=prefix, into=into, thread=thread)
+        self._listeners[service.name] = listener
+        return listener
+
+    @property
+    def listeners(self) -> tuple[Listener, ...]:
+        """Every way this pipeline can be started, in declaration order."""
+        return tuple(self._listeners.values())
+
+    def thread_for(self, service: Integration) -> WorkflowInput | None:
+        """The input a run's conversation arrives in, if it was given one."""
+        return self._threads.get(service.name)
 
     @property
     def integrations(self) -> tuple[Integration, ...]:

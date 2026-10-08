@@ -101,6 +101,24 @@ def test_emit_refuses_two_pipelines_claiming_one_filename(tmp_path: Path) -> Non
     result = runner.invoke(app, ["emit", str(src), "--out", str(out)])
     assert result.exit_code == 1
     assert "claimed by both" in result.output
+    assert str(out) in result.output, "say where the two would land, not just the name"
+
+
+def test_emit_lets_two_folders_hold_the_same_filename(tmp_path: Path) -> None:
+    """Each folder builds into its own `build/`, so the names never meet.
+
+    Refusing this would mean a stdlib stage could be used in one pipeline per
+    repository — two pipelines both placing `read.yaml` beside their own
+    workflow is the ordinary consequence of reusing one.
+    """
+    src = tmp_path / "pipelines"
+    _write(src, "first", MINIMAL.format(pid="same_name"))
+    _write(src, "second", MINIMAL.format(pid="same_name"))
+    result = runner.invoke(app, ["emit", str(src)])
+    assert result.exit_code == 0, result.output
+    assert "claimed by both" not in result.output
+    assert (src / "first" / "build" / "same_name.yaml").is_file()
+    assert (src / "second" / "build" / "same_name.yaml").is_file()
 
 
 def test_lint_reports_without_writing(tmp_path: Path) -> None:

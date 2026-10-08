@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from ictus.graph.pipeline import Pipeline
     from ictus.graph.requirements import Executable
 
-__all__ = ["executable_issues", "integration_issues"]
+__all__ = ["datasource_issues", "executable_issues", "integration_issues"]
 
 #: Long enough for a cold `--version`, short enough not to hang a launch.
 PROBE_TIMEOUT_SECONDS = 10.0
@@ -146,3 +146,29 @@ def integration_issues(pipeline: Pipeline) -> list[PreflightIssue]:
                 )
             )
     return issues
+
+
+def datasource_issues(pipeline: Pipeline) -> list[PreflightIssue]:
+    """Every declared source this machine cannot supply a connection for.
+
+    Offline only, like an integration's. Probing would mean opening a
+    connection to a production database to find out whether a pipeline parses,
+    and the one thing worse than a preflight nobody runs is one nobody dares
+    to.
+
+    The commands a source needs are folded into the pipeline's executables when
+    it is declared, so they are checked by ``executable_issues`` and are not
+    repeated here.
+    """
+    return [
+        PreflightIssue(
+            requirement=f"read:{source.name}",
+            problem=(
+                f"${var.name} is not set, so {source.name!r} cannot be reached ({source.purpose})"
+            ),
+            remedy=source.setup_hint or f"export {var.name}=... before the run",
+        )
+        for source in pipeline.all_datasources()
+        for var in source.required_env
+        if not os.environ.get(var.name)
+    ]

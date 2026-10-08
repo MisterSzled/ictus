@@ -427,7 +427,54 @@ def _undeclared_reference_problems(pipeline: Pipeline, node: Node, where: str) -
         for name in sorted(referenced - declared)
         if name in known
     ]
-    return problems + _undeclared_member_field_problems(pipeline, node, where)
+    return (
+        problems
+        + _undeclared_member_field_problems(pipeline, node, where)
+        + _undeclared_port_problems(pipeline, node, where)
+    )
+
+
+def _undeclared_port_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
+    """A step is in scope port by port, not whole.
+
+    Each ``input:`` entry names one output. A node wired for one of another
+    node's ports has *that port* in scope and nothing else, so reading a second
+    one renders against a dict holding only the first and fails with "'dict
+    object' has no attribute 'basis'" — well after the step that produced it
+    succeeded, and on a graph the node-level check calls wired.
+
+    The node-level check above cannot see this: the source is declared, so it is
+    satisfied. Both have been wrong in the same session, which is what this is
+    for.
+    """
+    carried: dict[str, set[str]] = {}
+    for dep in pipeline.deps_into(node):
+        carried.setdefault(dep.source.node_id, set()).add(dep.connection.source.name)
+    if not carried:
+        return []
+    # Prompts only. A route condition is rendered against the whole context
+    # (`engine/router.py`: `eval_context = {**context, "output": ...}`), so a
+    # condition may read a port this node was never wired for and is right to.
+    referenced: list[Ref] = list(node.prompt_refs())
+    groups = {g.group_id for g in pipeline.groups} | {m.group_id for m in pipeline.maps}
+    return [
+        f"{where}: {describe(node)} reads {ref.source_id}.{ref.port}, but is wired to "
+        f"{ref.source_id!r} for {_listed(carried[ref.source_id])} only. Under "
+        f"context.mode 'explicit' one input entry carries one port, so this renders "
+        f"against a value without it and fails at run time. Add a feed() for it."
+        for ref in referenced
+        # Its own ports are always in scope, and a group is projected whole.
+        if ref.source_id in carried
+        and ref.source_id != node.node_id
+        and ref.source_id not in groups
+        and not ref.from_input
+        and ref.port not in carried[ref.source_id]
+    ]
+
+
+def _listed(ports: set[str]) -> str:
+    """Port names as prose, for a message somebody has to act on."""
+    return ", ".join(sorted(repr(name) for name in ports))
 
 
 def _undeclared_member_field_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:

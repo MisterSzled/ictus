@@ -6,8 +6,9 @@ Answers both shapes ictus posts in:
 * an **incoming webhook** — any other path. Takes `{"text": ...}` and returns
   `ok`, exactly as Slack's does, including returning no timestamp, which is why
   a webhook cannot be threaded onto.
-* **chat.postMessage** — returns `{"ok": true, "ts": ...}`, so a run can learn
-  its own thread and reply under it.
+* **chat.postMessage** — returns `{"ok": true, "ts": ..., "message": {...}}`, so a
+  run can learn its own thread and reply under it, and can tell a reply that
+  landed from one Slack quietly put at the top of the channel instead.
 
     python3 smoke/fake_channel.py
     export SLACK_BOT_TOKEN=xoxb-pretend
@@ -55,15 +56,31 @@ class Slack(BaseHTTPRequestHandler):
         parent = str(body.get("thread_ts") or "")
         type(self).next_ts += 1
         ts = f"{type(self).next_ts:.6f}"
-        if parent:
-            root = type(self).roots.get(parent, parent)
+        # A parent nobody has seen is one that was deleted. Slack does not
+        # refuse that — it accepts the message and puts it at the top of the
+        # channel — so neither does this, because the whole point of standing
+        # in for Slack is to reproduce the behaviour that caught somebody out.
+        known = parent in type(self).roots
+        if parent and known:
+            root = type(self).roots[parent]
             print(f"      ↳ [thread {root}] " + text.replace("\n", "\n        "))
             type(self).roots[ts] = root
         else:
-            print(f"\n=== new thread {ts} ===")
+            if parent:
+                print(f"\n=== new thread {ts} (asked for {parent}, which is not here) ===")
+            else:
+                print(f"\n=== new thread {ts} ===")
             print(text)
             type(self).roots[ts] = ts
-        self._reply(200, json.dumps({"ok": True, "ts": ts, "channel": "C0PRETEND"}).encode())
+        # `message` carries what actually happened, which is the only way a
+        # caller can tell a reply from one that silently landed at the root.
+        posted: dict[str, str] = {"ts": ts}
+        if parent and known:
+            posted["thread_ts"] = type(self).roots[ts]
+        self._reply(
+            200,
+            json.dumps({"ok": True, "ts": ts, "channel": "C0PRETEND", "message": posted}).encode(),
+        )
 
     def _reply(self, status: int, body: bytes) -> None:
         self.send_response(status)

@@ -38,6 +38,7 @@ from ictus.graph.ref import (
     tpl,
 )
 from ictus.graph.requirements import (
+    Datasource,
     EnvVar,
     Executable,
     Integration,
@@ -55,6 +56,7 @@ __all__ = [
     "CompositionError",
     "ComputeNode",
     "ContextTier",
+    "Datasource",
     "Edge",
     "EmitError",
     "EnvVar",

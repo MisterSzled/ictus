@@ -77,6 +77,11 @@ def announce(
     offer is worse than that — the engine accepts the answer and then fails the
     run on it.
     """
+    if not to.announces:
+        raise CompositionError(
+            f"announce node {node_id!r} reports to {to.name!r}, which comments on items "
+            "rather than reporting to a place. Use comment for that"
+        )
     if timeout < 1:
         raise CompositionError(f"announce node {node_id!r} needs a timeout of at least 1s")
     if thread is not None and not to.threads:
@@ -113,6 +118,7 @@ def announce(
             # failed step.
             str(timeout),
         ),
+        uses=(to.name,),
         stdin=text,
         timeout=timeout + 5,
         declared_outputs=(

@@ -36,10 +36,11 @@ from typing import TYPE_CHECKING
 
 from ictus.errors import IctusError
 from ictus.notify.slack.send import SECTION_LIMIT, api_call, reply
+from ictus.notify.slack.trigger import Asked, Trigger, asked
 from ictus.websocket import HandshakeError, connect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Mapping
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +127,20 @@ class Note:
     text: str
 
 
-def events(envelope: Mapping[str, object]) -> Iterator[Click | Note]:
-    """The presses and submitted forms in one envelope, if it holds any."""
+def events(
+    envelope: Mapping[str, object], triggers: Sequence[Trigger] = ()
+) -> Iterator[Click | Note | Asked]:
+    """Everything actionable in one envelope: presses, forms, and requests.
+
+    The first trigger that matches wins. Two pipelines sharing a prefix is a
+    thing somebody wrote by mistake, and starting both would charge twice for
+    it; the order is the order manifests were found, which is sorted by path.
+    """
+    for trigger in triggers:
+        request = next(asked(dict(envelope), trigger), None)
+        if request is not None:
+            yield request
+            break
     payload = envelope.get("payload")
     if not isinstance(payload, dict):
         return
@@ -240,9 +253,12 @@ def open_socket(app_token: str) -> str:
 
 
 def presses(
-    app_token: str, *, pause: Callable[[float], None] = time.sleep
-) -> Generator[Click | Note, None, None]:
-    """Every press and submitted form, for as long as it runs.
+    app_token: str,
+    *,
+    triggers: Sequence[Trigger] = (),
+    pause: Callable[[float], None] = time.sleep,
+) -> Generator[Click | Note | Asked, None, None]:
+    """Every press, submitted form and request to start a run.
 
     Raises only when Slack refuses the credential.
     """
@@ -269,7 +285,7 @@ def presses(
                 envelope_id = envelope.get("envelope_id")
                 if isinstance(envelope_id, str):
                     socket.send(json.dumps({"envelope_id": envelope_id}))
-                yield from events(envelope)
+                yield from events(envelope, triggers)
         except (OSError, NotImplementedError) as exc:
             logger.warning("the connection to Slack dropped (%s); reconnecting", type(exc).__name__)
         finally:

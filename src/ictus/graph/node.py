@@ -638,6 +638,21 @@ class ScriptNode(Node):
     deliberately rather than by hand.
     """
 
+    uses: tuple[str, ...] = ()
+    """Names of pipeline declarations this step was built from.
+
+    A step built from an ``Integration`` or a ``Datasource`` carries that
+    thing's program in ``args``, and from there it is opaque — which means a
+    pipeline can reach a production database, or post as somebody, through a
+    step whose requirement nothing ever recorded. Preflight would report no
+    requirements and pass, the start gate would list nothing, and the first
+    anyone knew of it would be a credential missing mid-run.
+
+    Names rather than the objects: this layer knows what a declaration is
+    called and never what it is for. The lint resolves them against the
+    pipeline's own declarations and refuses one that is not there.
+    """
+
     def __post_init__(self) -> None:
         if not self.command.strip():
             raise CompositionError(f"script node {self.node_id!r} requires a command")

@@ -186,6 +186,41 @@ def placeholder_problems(pipeline: Pipeline, where: str) -> list[str]:
     return problems
 
 
+def undeclared_use_problems(
+    pipeline: Pipeline, where: str, inherited: frozenset[str] = frozenset()
+) -> list[str]:
+    """A step reaching something the pipeline never said it reaches.
+
+    The rule the whole design rests on: what a run touches outside the machine
+    is announced at the top, where a reader sees it before they read what it
+    does and whoever approves the run is shown the same list. A step built from
+    an ``Integration`` or a ``Datasource`` carries its program as opaque argv,
+    so without this a pipeline can post as somebody, or open a production
+    database, while preflight reports no requirements and passes.
+
+    Checked by name, which is what a node is allowed to remember. Names are
+    unique per kind and per pipeline, so a name that resolves is the thing the
+    step was built from.
+
+    ``inherited`` is what the pipelines above this one declare. A stage is part
+    of its caller's run and reports onto its caller's conversation, so an
+    integration declared once at the top is declared for the steps attached
+    inside a stage as well — which is exactly where ``apply_integrations`` puts
+    them.
+    """
+    declared = set(inherited)
+    declared |= {service.name for service in pipeline.integrations}
+    declared |= {source.name for source in pipeline.datasources}
+    return [
+        f"{where}: {describe(node)} uses {name!r}, which this pipeline does not declare. "
+        f"Announce it at the top with integrate() or require_datasource() — otherwise "
+        f"preflight checks none of its credentials and the start gate lists none of them"
+        for node in pipeline.nodes
+        for name in getattr(node, "uses", ())
+        if name not in declared
+    ]
+
+
 def previous_pass_problems(pipeline: Pipeline, where: str) -> list[str]:
     """A read of the last pass, on a graph that never takes a second one.
 

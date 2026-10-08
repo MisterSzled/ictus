@@ -103,9 +103,18 @@ def workflow_block(pipeline: Pipeline, inherited: Inherited = NOTHING_INHERITED)
         block["instructions"] = list(pipeline.instructions)
     block["entry_point"] = pipeline.entry().node_id
 
-    runtime: YamlDict = {
-        "provider": {"name": pipeline.provider or inherited.provider or DEFAULT_PROVIDER}
-    }
+    provider: YamlDict = {"name": pipeline.provider or inherited.provider or DEFAULT_PROVIDER}
+    # Only when asked for. The engine refuses the field on any other provider,
+    # and its own default is the same "none" — so saying it unprompted would be
+    # noise in the diff and a validation error the moment somebody switched.
+    if pipeline.native_tools == "claude_code":
+        provider["native_tools"] = "claude_code"
+    elif isinstance(pipeline.native_tools, tuple):
+        # A list, so the step is given these and nothing else. Emitted as a
+        # list because that is what the schema takes; a tuple is ictus's way of
+        # keeping the pipeline hashable, not the engine's spelling.
+        provider["native_tools"] = list(pipeline.native_tools)
+    runtime: YamlDict = {"provider": provider}
     model = pipeline.default_model or inherited.default_model
     if model is not None:
         runtime["default_model"] = model

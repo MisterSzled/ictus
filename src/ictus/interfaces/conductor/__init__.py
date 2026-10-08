@@ -13,6 +13,7 @@ with a name.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING
 from ictus.errors import IctusError
 from ictus.graph.node import NODE_KINDS
 from ictus.interfaces import Capabilities, Document, PreflightIssue, ValidationResult
+from ictus.interfaces.conductor import manifest
 from ictus.interfaces.conductor.agents import agent_entry
 from ictus.interfaces.conductor.lints import conductor_problems
 from ictus.interfaces.conductor.mapping import for_each_block
@@ -29,18 +31,148 @@ from ictus.interfaces.conductor.serialize import dump_yaml
 from ictus.interfaces.conductor.signals import REPORTABLE
 from ictus.interfaces.conductor.templates import output_block
 from ictus.interfaces.conductor.workflow import NOTHING_INHERITED, Inherited, workflow_block
-from ictus.interfaces.environment import executable_issues, integration_issues
+from ictus.interfaces.environment import (
+    datasource_issues,
+    executable_issues,
+    integration_issues,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
     from ictus.graph.pipeline import Pipeline
     from ictus.graph.values import YamlDict, YamlValue
 
-__all__ = ["ConductorBackend", "conductor"]
+__all__ = ["ConductorBackend", "binary", "conductor", "launch_command", "launch_env"]
 
 BINARY = "conductor"
+
+
+def binary() -> str:
+    """The Conductor executable, or a ``FileNotFoundError`` naming what is missing."""
+    found = shutil.which(BINARY)
+    if found is None:
+        raise FileNotFoundError(
+            f"{BINARY!r} is not on PATH; the Conductor backend cannot check or run "
+            "what it compiles without it"
+        )
+    return found
+
+
+#: Variables about the *machine*, which a run cannot work without and which are
+#: nobody's pipeline secret: where to find commands, where the home directory
+#: is, where temporary files go, how to decode bytes, which certificates to
+#: trust.
+MACHINE_ENV: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "SYSTEMROOT",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+    }
+)
+
+#: Prefixes for the engine's own settings and for model-provider credentials.
+#: Matched by prefix rather than listed, because a provider added upstream
+#: brings its own variable names and a run that cannot authenticate is a
+#: confusing failure, not a safe one. These are machine credentials — the right
+#: to call a model — and not the pipeline secrets this filtering is about.
+MACHINE_PREFIXES: tuple[str, ...] = (
+    "CONDUCTOR_",
+    "CLAUDE_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "AZURE_",
+    "COPILOT_",
+    "GITHUB_",
+    "ACA_",
+    "OTEL_",
+)
+
+
+def launch_env(declared: Iterable[str], source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment a run should receive: what it declared, and nothing else.
+
+    A workflow is spawned as its own process, which is the one place an
+    environment can actually be cut — a stage is a file, not a process, and the
+    provider hands a model session a copy of whatever the run inherited. So a
+    step with a shell sees every variable the run was given, and the only way to
+    keep a credential away from it is not to give the *run* that credential.
+
+    ``declared`` is what the pipeline announced: its integrations' variables,
+    its datasources', its MCP servers'. Everything outside that and the machine
+    baseline is dropped, which is what turns the declaration from something a
+    reviewer reads into something the run is actually bounded by. The listener's
+    own app-level token is the clearest case — no pipeline declares it, so no
+    run receives it, and a run cannot open a socket as the app that started it.
+
+    Missing variables are simply absent rather than empty: a program testing
+    ``os.environ.get(NAME)`` should see the same nothing it would see on a
+    machine where nobody set it.
+    """
+    present = os.environ if source is None else source
+    wanted = set(declared) | MACHINE_ENV
+    return {
+        name: value
+        for name, value in present.items()
+        if name in wanted or name.startswith(MACHINE_PREFIXES)
+    }
+
+
+def launch_command(
+    executable: str,
+    path: Path,
+    *,
+    inputs: Mapping[str, str],
+    dashboard: bool,
+    background: bool = False,
+    workspace_instructions: bool = True,
+    log_file: str | None = None,
+) -> list[str]:
+    """The argv that runs one compiled workflow.
+
+    Built here rather than at each call site so that everything which starts a
+    run — the CLI, and a listener acting on a message — spells the flags the
+    same way. The difference between ``--web`` and ``--web-bg`` decides whether
+    a gate can be answered from outside the process, which is not a detail to
+    get independently right in two places.
+    """
+    command = [executable, "run", str(path.resolve())]
+    for name, value in inputs.items():
+        command += ["-i", f"{name}={value}"]
+    if log_file is not None:
+        # Passed through verbatim: `auto` is Conductor's own spelling for a
+        # generated temp path, and anything else is taken as a file path.
+        command += ["--log-file", log_file]
+    if workspace_instructions:
+        # The provider runs every step with `setting_sources=[]` — no
+        # CLAUDE.md, no settings, no ambient skills — so a step arrives
+        # knowing nothing the project says about itself. This flag is the
+        # engine's own opt-in: it walks from the working directory up to the
+        # git root and prepends AGENTS.md, .github/copilot-instructions.md,
+        # CLAUDE.md and .github/instructions/*.instructions.md to every
+        # prompt. Nothing else ictus can emit reaches those files.
+        command.append("--workspace-instructions")
+    if background:
+        command.append("--web-bg")
+    elif dashboard:
+        command.append("--web")
+    return command
 
 
 class ConductorBackend:
@@ -111,6 +243,12 @@ class ConductorBackend:
         out = [
             Document(f"{pipeline.pipeline_id}.yaml", dump_yaml(self.document(pipeline, inherited)))
         ]
+        # Only here, never for a stage: a stage is reached through its caller
+        # and has no run of its own for a message to start.
+        if inherited is NOTHING_INHERITED:
+            listening = manifest.render(pipeline)
+            if listening:
+                out.append(Document(manifest.filename_for(pipeline), listening))
         seen = {out[0].filename}
         below = inherited.under(pipeline)
         for child in pipeline.children.values():
@@ -139,6 +277,7 @@ class ConductorBackend:
         return [
             *executable_issues(pipeline, probe=probe),
             *integration_issues(pipeline),
+            *datasource_issues(pipeline),
             *preflight_issues(pipeline, probe=probe),
         ]
 
@@ -193,26 +332,15 @@ class ConductorBackend:
                 "background run without one cannot be reached, and there is no flag "
                 "that does it. Ask for one or the other."
             )
-        command = [self._binary(), "run", str(path.resolve())]
-        for name, value in inputs.items():
-            command += ["-i", f"{name}={value}"]
-        if log_file is not None:
-            # Passed through verbatim: `auto` is Conductor's own spelling for a
-            # generated temp path, and anything else is taken as a file path.
-            command += ["--log-file", log_file]
-        if workspace_instructions:
-            # The provider runs every step with `setting_sources=[]` — no
-            # CLAUDE.md, no settings, no ambient skills — so a step arrives
-            # knowing nothing the project says about itself. This flag is the
-            # engine's own opt-in: it walks from the working directory up to the
-            # git root and prepends AGENTS.md, .github/copilot-instructions.md,
-            # CLAUDE.md and .github/instructions/*.instructions.md to every
-            # prompt. Nothing else ictus can emit reaches those files.
-            command.append("--workspace-instructions")
-        if background:
-            command.append("--web-bg")
-        elif dashboard:
-            command.append("--web")
+        command = launch_command(
+            self._binary(),
+            path,
+            inputs=inputs,
+            dashboard=dashboard,
+            background=background,
+            workspace_instructions=workspace_instructions,
+            log_file=log_file,
+        )
         return subprocess.run(command, check=False, cwd=working_dir).returncode
 
     def plan(self, path: Path, *, working_dir: Path | None = None) -> int:
@@ -230,13 +358,7 @@ class ConductorBackend:
 
     @staticmethod
     def _binary() -> str:
-        found = shutil.which(BINARY)
-        if found is None:
-            raise FileNotFoundError(
-                f"{BINARY!r} is not on PATH; the Conductor backend cannot check or run "
-                "what it compiles without it"
-            )
-        return found
+        return binary()
 
 
 conductor = ConductorBackend()

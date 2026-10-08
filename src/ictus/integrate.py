@@ -140,10 +140,22 @@ class _Attachment:
 
         thread: _Thread | None = None
         opener: Node | None = None
-        if self.target.threads:
+        given = self.root.thread_for(self.target)
+        if given is not None and given.name == THREAD_PORT:
+            raise CompositionError(
+                f"pipeline {self.label!r} reports into an input called {THREAD_PORT!r}, "
+                "which is also what an announcement publishes. A node's ports share one "
+                "namespace, so the announcement would declare it twice — name the input "
+                "something else; only the reporting reads it."
+            )
+        if given is not None:
+            # The conversation was already open when the run started, so opening
+            # another would answer beside the question instead of under it.
+            thread = _Thread(given)
+        elif self.target.threads:
             opener = self._first(OPENER_ID, f"*{self.label}* — new run")
             thread = _Thread(opener)
-        elif self.target.wants(RunSignal.RUN_STARTED):
+        if given is None and not self.target.threads and self.target.wants(RunSignal.RUN_STARTED):
             self._first(f"{_PREFIX}started", f"*{self.label}* started")
 
         if self.target.wants(RunSignal.DECISION_NEEDED):

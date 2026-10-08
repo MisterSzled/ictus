@@ -31,7 +31,7 @@ from ictus.baseline import AGENT_BASELINE, NO_BASELINE
 from ictus.errors import IctusError
 
 if TYPE_CHECKING:
-    from ictus.graph.pipeline import Pipeline
+    from ictus.graph.pipeline import NativeTools, Pipeline
 
 __all__ = ["CONFIG_FILE", "MINIMAL", "ConfigError", "PipelineConfig", "read_config"]
 
@@ -54,6 +54,7 @@ _KNOWN = frozenset(
         "instructions",
         "workspace_instructions",
         "system_prompt",
+        "native_tools",
     }
 )
 
@@ -72,7 +73,13 @@ class PipelineConfig:
     """Whether a person confirms before anything runs. See ``ictus.gate``."""
 
     budget_usd: float | None = None
-    budget_mode: str = "audit"
+    budget_mode: str | None = None
+    """Whether the budget stops a run or only records it.
+
+    ``None`` means this file did not say, and the pipeline's own value stands.
+    Defaulting it to ``"audit"`` here instead made every pipeline that asked for
+    ``enforce`` in composition emit ``audit``, silently — the one policy field
+    that overwrote rather than conflicted, so nothing ever reported it."""
     max_iterations: int | None = None
     timeout_seconds: int | None = None
     """A wall-clock ceiling on the whole run, in seconds.
@@ -86,6 +93,17 @@ class PipelineConfig:
 
     dashboard: bool = True
     """Whether ``ictus run`` serves the dashboard. A gated run needs one."""
+
+    native_tools: NativeTools = "none"
+    """Whether a step that names no tools may read files, run commands, or fetch.
+
+    Off, which is the engine's own default and was not always: a step with no
+    ``tools`` used to be handed the filesystem, a shell and the web without any
+    pipeline saying so. Closing that was right and it is not free — a step that
+    was reading the repository now answers from memory and sounds no different
+    doing it, because nothing fails. Turn it on where a step is meant to go and
+    look, and the diff shows which pipelines can touch a disk.
+    """
 
     system_prompt: str | None = AGENT_BASELINE
     """What every model call is told about how to work, unless it sets its own.
@@ -160,11 +178,59 @@ class PipelineConfig:
                     "Policy belongs in config.yaml; take it out of the composition."
                 )
             setattr(pipeline, field, value)
-        pipeline.budget_mode = self.budget_mode  # type: ignore[assignment]
+        # Apart from the loop, because this is the one policy field whose
+        # composition-side default is a value rather than `None`: a pipeline
+        # reading `audit` has not chosen it, so taking that for disagreement
+        # would refuse every config that set a mode. Overwriting unconditionally
+        # is what this used to do, and it meant every pipeline asking for
+        # `enforce` emitted `audit` with nothing said.
+        if self.budget_mode is not None:
+            if pipeline.budget_mode not in ("audit", self.budget_mode):
+                raise ConfigError(
+                    f"{where}: budget_mode is {self.budget_mode!r} here but "
+                    f"{pipeline.budget_mode!r} in the pipeline. Policy belongs in "
+                    "config.yaml; take it out of the composition."
+                )
+            pipeline.budget_mode = self.budget_mode  # type: ignore[assignment]
+        pipeline.workspace_instructions = self.workspace_instructions
         if self.instructions and not pipeline.instructions:
             pipeline.instructions = list(self.instructions)
         if pipeline.system_prompt is None:
             pipeline.system_prompt = self.system_prompt
+        if pipeline.native_tools is None:
+            pipeline.native_tools = self.native_tools
+
+
+def _native_tools(loaded: dict[str, object], where: str) -> NativeTools:
+    """``native_tools``: nothing, everything, or exactly what is listed.
+
+    The list is the one worth reaching for. ``claude_code`` grants a shell
+    along with the reading, and a step with a shell is bounded by its own
+    judgement rather than by anything here — one started a database container
+    to try its own SQL against, which was a reasonable thing to do and not a
+    thing anybody had agreed to. ``[Read, Grep, Glob]`` is a step that may look
+    at a repository and may not run it.
+    """
+    value = loaded.get("native_tools", "none")
+    if value == "claude_code":
+        return "claude_code"
+    if isinstance(value, list):
+        named = [str(item).strip() for item in value]
+        if not named or not all(named):
+            raise ConfigError(
+                f"{where}: native_tools is an empty list, or has an entry with no "
+                "name. Write 'none' to grant nothing — an empty list reads as "
+                "something half-written rather than a decision."
+            )
+        return tuple(named)
+    if value != "none":
+        raise ConfigError(
+            f"{where}: native_tools is {value!r}; it is 'none', 'claude_code', or a "
+            "list of tool ids such as [Read, Grep, Glob]. 'claude_code' lets a step "
+            "that names no tools read files, run commands and fetch, which is what "
+            "the bare `claude` CLI gives you."
+        )
+    return "none"
 
 
 def read_config(path: Path) -> PipelineConfig:
@@ -199,8 +265,8 @@ def read_config(path: Path) -> PipelineConfig:
             "own is copilot, and inheriting it silently is how a pipeline ends up running "
             "somewhere nobody chose."
         )
-    mode = loaded.get("budget_mode", "audit")
-    if mode not in _BUDGET_MODES:
+    mode = loaded.get("budget_mode")
+    if mode is not None and mode not in _BUDGET_MODES:
         raise ConfigError(f"{where}: budget_mode must be one of {sorted(_BUDGET_MODES)}")
     timeout_seconds = _optional_int(loaded, "timeout_seconds", where)
     if timeout_seconds is not None and timeout_seconds < 1:
@@ -222,6 +288,7 @@ def read_config(path: Path) -> PipelineConfig:
         instructions=_instructions(loaded, where, beside=path.parent),
         workspace_instructions=_flag(loaded, "workspace_instructions", where, default=True),
         system_prompt=_system_prompt(loaded, where, beside=path.parent),
+        native_tools=_native_tools(loaded, where),
     )
 
 
