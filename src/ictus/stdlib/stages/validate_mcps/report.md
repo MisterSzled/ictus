@@ -1,0 +1,1 @@
+Each block below is one MCP server check. Report all_ok=true only if every one reported available=true. In `report`, name each server that failed and what it said, so the reader knows what to go and fix.

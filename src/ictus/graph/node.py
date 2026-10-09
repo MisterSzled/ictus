@@ -1,15 +1,8 @@
 """Node kinds — one frozen class per Conductor agent type.
 
-Conductor's ``AgentDef`` is a single wide model whose ``validate_agent_type``
-validator enforces a different required/forbidden field set for each of its
-eight ``type`` values, twenty-plus fields deep. Mirroring that as one class with
-a free-form config dict reproduces the trap: every illegal combination stays
-representable and is only caught downstream, if at all.
-
-Instead each kind is its own class carrying only the fields Conductor permits on
-it. ``TerminateNode`` has no ``outputs`` field to set, so the "terminate agents
-cannot have 'output'" rule cannot be violated. ``routes`` is not modelled here
-at all — routing belongs to the graph, so ``Pipeline`` owns it.
+Each kind carries only the fields Conductor permits on it, so an illegal
+combination is unrepresentable. Routing is not modelled here; ``Pipeline``
+owns it.
 """
 
 from __future__ import annotations
@@ -24,17 +17,39 @@ from ictus.graph.ports import InputPort, OutputPort, PortType
 from ictus.graph.ref import Ref, Template
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Hashable, Iterable, Iterator, Mapping
 
-    from ictus.graph.values import YamlDict, YamlValue
+__all__ = [
+    "NODE_KINDS",
+    "OUTCOME_PORT",
+    "AgentNode",
+    "Backoff",
+    "ComputeNode",
+    "ContextTier",
+    "GateChoice",
+    "GateNode",
+    "Node",
+    "NodeKind",
+    "Question",
+    "QuestionsNode",
+    "ReasoningEffort",
+    "RetryOn",
+    "RetryPolicy",
+    "ScopeNode",
+    "ScriptNode",
+    "SubGraphNode",
+    "TerminateNode",
+    "Validator",
+    "WaitNode",
+    "coerced_outcome",
+    "slugify",
+]
 
 
 class NodeKind(StrEnum):
     """What a node does, named for the work rather than for any engine.
 
-    A backend maps these onto whatever it calls them. ``Capabilities`` is
-    declared in these terms, so a graph using a kind the target cannot express
-    is refused while it is being composed.
+    ``Capabilities`` is declared in these terms.
     """
 
     LLM_CALL = "llm_call"
@@ -58,12 +73,7 @@ class Backoff(StrEnum):
 
 
 class RetryOn(StrEnum):
-    """A category of failure worth attempting again.
-
-    Deliberately narrow. A wrong answer is not a transient failure and retrying
-    it just buys the same answer twice; these are the two the engine can tell
-    apart from outside the model.
-    """
+    """A category of failure worth attempting again. Transient only."""
 
     PROVIDER_ERROR = "provider_error"
     TIMEOUT = "timeout"
@@ -72,15 +82,8 @@ class RetryOn(StrEnum):
 class ReasoningEffort(StrEnum):
     """How much thinking a step is allowed before it answers.
 
-    The levels are a budget, not a dial on quality: on Anthropic each maps to a
-    number of thinking tokens the model may spend — roughly 2k, 8k, 16k, 32k and
-    60k — which is charged whether or not the step needed them. That is per
-    call, so a council of four voices over three rounds at ``MAX`` is a
-    different order of spend from the same council at ``LOW``.
-
-    Worth setting per node rather than per workflow for exactly that reason: the
-    step that synthesises is usually the one that needs it, and the steps either
-    side of it usually do not.
+    A token budget charged per call, whether or not the step needed it. On
+    Anthropic roughly 2k, 8k, 16k, 32k and 60k thinking tokens.
     """
 
     LOW = "low"
@@ -101,12 +104,7 @@ class ContextTier(StrEnum):
 class RetryPolicy:
     """What a step does about a transient failure.
 
-    Transient means the provider fell over or the call timed out — not that the
-    answer was wrong. Re-running a step that produced a bad answer produces
-    another bad answer at full price, which is what ``converge`` is for.
-
-    ``attempts`` counts the first try, so 1 means no retry at all and is the
-    engine's default.
+    ``attempts`` counts the first try, so 1 means no retry and is the default.
     """
 
     attempts: int = 3
@@ -125,12 +123,35 @@ class RetryPolicy:
             raise CompositionError(
                 f"retry first_delay_seconds must be positive, got {self.first_delay_seconds}"
             )
-        if len(set(self.on)) != len(self.on):
+        if _repeated(self.on):
             raise CompositionError(f"retry policy repeats a failure category: {list(self.on)}")
 
 
+def _repeated[T: Hashable](items: Iterable[T]) -> list[T]:
+    """Values appearing more than once, in the order they first repeat.
+
+    Returns rather than raises, so each caller keeps its own wording: a port
+    declared twice, a gate choice reused and an answer id reused are three
+    different mistakes, and in each the message is most of the value. There
+    were four spellings of this one idea in this file — a ``seen`` set, two
+    ``list.count`` comprehensions and a ``len(set(...))`` — and the
+    ``count`` ones are quadratic besides.
+
+    ``requirements.py`` has a fifth and deliberately keeps it: it needs the
+    members back to render ``RunSignal.value``, and importing this would give
+    the module that ``notify/`` and ``sources/`` both depend on a run-time edge
+    into the largest module in ``graph``.
+    """
+    seen: set[T] = set()
+    repeats: list[T] = []
+    for item in items:
+        if item in seen and item not in repeats:
+            repeats.append(item)
+        seen.add(item)
+    return repeats
+
+
 def _has_text(prompt: str | Template) -> bool:
-    """Whether a prompt says anything at all."""
     if isinstance(prompt, Template):
         return bool(prompt.parts)
     return bool(prompt.strip())
@@ -147,19 +168,35 @@ def slugify(label: str) -> str:
     return out.strip("_")
 
 
+#: Words Conductor's renderer turns into something that is not a string.
+_COERCED = frozenset({"True", "False", "None", "true", "false", "null"})
+
+
+def coerced_outcome(name: str) -> bool:
+    """Whether Conductor would hand this outcome back as a non-string.
+
+    A rendered output goes through ``json.loads`` (`_maybe_parse_json`), so
+    ``"true"``, ``"3"`` and anything opening a JSON container arrive as a bool,
+    a number or a structure — and every ``equals`` comparison against the name
+    then fails without saying anything. Lives here rather than in ``scope.py``
+    because ``ScopeNode`` can be constructed directly, without the builder.
+    """
+    stripped = name.strip()
+    if stripped in _COERCED or stripped[:1] in '{["':
+        return True
+    try:
+        float(name)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass(frozen=True, kw_only=True, eq=False)
 class Node(ABC):
     """A single step in a workflow.
 
-    ``node_id`` is the identity Conductor routes on — it is emitted as
-    ``AgentDef.name``; ``description`` is the human-facing string and is emitted
-    as ``AgentDef.description``. Collapsing these two into one field is what made
-    the previous emitter unroutable: ``entry_point`` was written from the slug
-    while agent identity was the display string, so nothing resolved.
-
-    There is deliberately no third "label" field: Conductor has one human-text
-    slot, and a field that is stored, type-checked and then discarded is how the
-    previous port graph came to mean nothing.
+    ``node_id`` is the identity routing resolves against; ``description`` is the
+    human-facing string. There is no third label field.
     """
 
     node_id: str
@@ -174,14 +211,11 @@ class Node(ABC):
                 f"node_id {self.node_id!r} is not a routing identifier; "
                 f"use {slugify(self.node_id)!r} (lowercase, digits and underscore only)"
             )
-        seen: set[str] = set()
         names = [p.name for p in self.inputs] + [p.name for p in self.outputs]
-        for name in names:
-            if name in seen:
-                raise CompositionError(
-                    f"node {self.node_id!r} declares port {name!r} more than once"
-                )
-            seen.add(name)
+        if repeats := _repeated(names):
+            raise CompositionError(
+                f"node {self.node_id!r} declares port {repeats[0]!r} more than once"
+            )
 
     @property
     @abstractmethod
@@ -190,19 +224,12 @@ class Node(ABC):
 
     @property
     def outputs(self) -> tuple[OutputPort, ...]:
-        """Values this node produces.
-
-        Empty for the kinds on which Conductor forbids ``output:``.
-        """
+        """Values this node produces. Empty where ``output:`` is forbidden."""
         return ()
 
     @property
     def routes_via_options(self) -> bool:
-        """Whether outgoing edges are emitted as ``options[].route``.
-
-        True only for ``human_gate``, where ``routes:`` is accepted by the
-        schema and then ignored by the engine.
-        """
+        """Whether outgoing edges are emitted as ``options[].route``. Gates only."""
         return False
 
     @property
@@ -218,30 +245,21 @@ class Node(ABC):
     def output_ref(self, port_name: str) -> str:
         """The path under ``<node>.output.`` that reads this port.
 
-        Identity for most kinds. A gate overrides it because Conductor fixes the
-        shape of a gate's output rather than taking a declared schema.
+        Identity except on a gate, whose output shape the engine fixes.
         """
         return port_name
 
     def guard_depth(self, port_name: str) -> int:
         """How many trailing path segments a guard must test individually.
 
-        Zero for almost everything: if the step ran, its declared outputs are
-        there, so testing the node's own name is enough. A gate is the
-        exception — its free-text field exists only on the branch that asked
-        for one, and both ``additional_input`` and the field itself can be
-        missing on any other branch. Reading either under strict undefined is a
-        hard template error, and it lands a round later than the mistake.
+        Zero unless a segment can be absent even though the step ran, which is
+        the case for a gate's free-text field.
         """
         _ = port_name
         return 0
 
     def template_strings(self) -> Iterator[str]:
-        """Author-written *raw* strings a backend renders.
-
-        Typed references are reported by ``prompt_refs`` instead; anything left
-        here is literal text that should contain no template syntax at all.
-        """
+        """Author-written raw strings a backend renders. Typed refs go to ``prompt_refs``."""
         return iter(())
 
     def prompt_refs(self) -> Iterator[Ref]:
@@ -251,10 +269,8 @@ class Node(ABC):
     def settled_template_strings(self) -> Iterator[str]:
         """Raw strings rendered with the whole run in scope, not the node's inputs.
 
-        Conductor renders a terminal's output payload against the accumulated
-        context rather than the step's declared inputs, so the explicit-mode rule
-        that governs a prompt does not govern these. Keeping them apart is what
-        stops a correct payload being reported as an undeclared reference.
+        A terminal's output payload is rendered this way, so the explicit-mode
+        rule that governs a prompt does not apply.
         """
         return iter(())
 
@@ -263,11 +279,7 @@ class Node(ABC):
         return iter(())
 
     def ref(self, port: str) -> Ref:
-        """A typed reference to one of this node's outputs.
-
-        Checked here: an undeclared port raises now, rather than surviving as
-        text until a lint parses it back out or a run fails on it.
-        """
+        """A typed reference to one of this node's outputs. Raises on an undeclared port."""
         declared = self.get_output(port)
         return Ref(
             source_id=self.node_id,
@@ -278,7 +290,6 @@ class Node(ABC):
         )
 
     def get_input(self, name: str) -> InputPort:
-        """Look up a declared input port by name."""
         for port in self.inputs:
             if port.name == name:
                 return port
@@ -288,7 +299,6 @@ class Node(ABC):
         )
 
     def get_output(self, name: str) -> OutputPort:
-        """Look up a declared output port by name."""
         for port in self.outputs:
             if port.name == name:
                 return port
@@ -302,14 +312,9 @@ class Node(ABC):
 class Validator:
     """Judge a step's output against a rubric, and revise it once if it fails.
 
-    A second model call, after the step, asking whether the output meets
-    ``criteria``. It is about *content*, which is what makes it different from
-    the two checks that already exist: ``declared_outputs`` fixes the shape, and
-    ``retry`` covers a call that fell over. This one catches an answer that is
-    well-formed, delivered successfully, and wrong.
-
-    It is not free. Budget two model calls per step where you set it, and three
-    where the revision fires.
+    A second model call checking content, as against ``declared_outputs``
+    (shape) and ``retry`` (a call that fell over). Costs two model calls per
+    step, three when the revision fires.
     """
 
     criteria: str
@@ -319,9 +324,7 @@ class Validator:
     revise: bool = True
     """Whether a failed check re-runs the step once with the feedback attached.
 
-    A bool rather than a count because the engine hard-caps it at one: past a
-    single feedback-driven attempt you are fighting the prompt, not noise. Off,
-    the check still runs and still reports — it just does not act.
+    The engine caps this at one revision. Off, the check still runs and reports.
     """
 
     def __post_init__(self) -> None:
@@ -344,127 +347,75 @@ class AgentNode(Node):
     """Which tools this step may call.
 
     ``None`` leaves it to the workflow; an empty tuple denies tools outright.
-    Two different things, and collapsing them is why a step could not be built
-    that is *denied* tools — Conductor reads ``None`` as all and ``[]`` as none,
-    and an omitted key is the former.
     """
 
     declared_outputs: tuple[OutputPort, ...] = ()
     max_turns: int | None = None
     """How many tool-use rounds this step may take before the engine stops it.
 
-    Unset means the engine's default, which is fifty. A step that reaches it is
-    not throttled — it is killed: the provider raises rather than returning what
-    it had, and the error is *not* one a scope can turn into an outcome, so it
-    detonates the whole run. Raise it for a step whose job is to go and check
-    things, and expect to.
+    Unset means the engine's default of fifty. Reaching it raises and kills the
+    run; no scope can turn that into an outcome.
     """
 
     reasoning: ReasoningEffort | None = None
     """How much thinking this step may do before answering.
 
-    Unset leaves the workflow's own default, which is usually none at all.
-
-    Not every provider takes it, and the one these pipelines use is currently
-    among those that do not: ``claude-agent-sdk`` declares
-    ``capabilities.reasoning_effort=None``, so ``conductor validate`` refuses a
-    workflow that sets this against it. That refusal is the whole feedback loop
-    — ictus does not repeat the check, because Conductor's message names the
-    provider and the levels it would accept, which is more than ictus knows.
-
-    The gap is one assignment upstream rather than a missing capability: the CLI
-    takes ``--effort``, the SDK exposes ``ClaudeAgentOptions.effort`` and maps it
-    straight to that flag, and Conductor's provider reads neither. When that
-    lands this field starts working with no change here.
+    Unset leaves the workflow's default. Not every provider accepts it;
+    ``claude-agent-sdk`` does not, and ``conductor validate`` refuses it there.
     """
 
     timeout_seconds: float | None = None
     """Wall-clock ceiling on this step, enforced by the engine from outside.
 
-    The engine cancels the call and raises; nothing partial comes back, and the
-    error is not one a scope can turn into an outcome. Distinct from
-    ``max_turns``, which counts tool-use rounds rather than time, and from
-    ``max_session_seconds``, which asks the *provider* to bound its own session
-    rather than being cut off from outside.
+    The call is cancelled and raises; nothing partial comes back.
     """
 
     max_session_seconds: float | None = None
     """How long the provider may keep this step's session open.
 
-    The provider's own budget, as against ``timeout_seconds``, which is the
-    engine cancelling from outside. Setting it at or above ``timeout_seconds``
-    makes it unreachable — the engine gets there first — which is refused rather
-    than left as a number that reads like a limit and is not.
+    The provider's own budget. Must be below ``timeout_seconds`` or it is
+    unreachable, which is refused.
     """
 
     validator: Validator | None = None
-    """A second model call that judges this step's answer before the run moves on.
-
-    Off by default because it costs a second call every time and a third when it
-    revises. Worth it on a step whose output later steps cannot sanity-check.
-    """
+    """A second model call that judges this step's answer before the run moves on."""
 
     working_dir: str | None = None
     """Where this step reads and writes, overriding the run's own directory.
 
-    A relative path is resolved against the *workflow file's* directory, which
-    for ictus is the pipeline's ``build/`` — emitted output that ``ictus emit``
-    prunes. That is never what an author means, so the conductor lint refuses
-    it: use an absolute path, ``~/...``, or a template resolved at run time.
-
-    On ``claude-agent-sdk`` this moves the step's stdio MCP servers with it.
-    They inherit the cwd from the session subprocess rather than being
-    configured individually, so there is no way to move one and not the other.
+    A relative path resolves against the workflow file's directory — ``build/``
+    — so the conductor lint refuses one. Use absolute, ``~/...`` or a template.
+    On ``claude-agent-sdk`` this moves the step's stdio MCP servers too.
     """
 
     skills: tuple[str, ...] | None = None
     """Which skills this step may load. Three states, like ``tools``.
 
-    ``None`` takes the workflow's default set, an empty tuple denies every
-    skill, and a non-empty one names exactly what to load. Entries are either a
-    registered built-in name or a path — Conductor treats an entry as a path
-    when it starts with ``~`` or ``.``, or contains a separator — and a relative
-    path resolves against ``build/``, so the lint refuses it the same way it
-    refuses a relative ``working_dir``.
-
-    Not every provider can load one, and on ``claude-agent-sdk`` a skill must
-    live under a plugin root: naming a bare ``.claude/skills/x`` raises at run
-    time rather than loading. Reach for ``plugins`` there instead.
+    An entry is a registered name or a path; a path starts with ``~`` or ``.``
+    or contains a separator, and a relative one is refused by the lint. On
+    ``claude-agent-sdk`` a skill must live under a plugin root — use ``plugins``.
     """
 
     plugins: tuple[str, ...] | None = None
     """Whole plugins this step may use — their skills, subagents and MCP servers.
 
-    Same three states and the same path rule as ``skills``. A plugin is the unit
-    a person installs, and enabling one brings all three of the things it ships;
-    that is why it is the route to a skill on a provider that will not load a
-    loose one.
+    Same three states and path rule as ``skills``.
     """
 
     retry: RetryPolicy | None = None
-    """What to do when the *call* fails, as against when the answer is wrong.
+    """What to do when the call fails, as against when the answer is wrong.
 
-    Not every provider acts on it. Conductor's schema accepts it on any agent,
-    and ``claude-agent-sdk`` — the provider these pipelines use — never reads it,
-    so the conductor lint refuses the combination rather than letting a workflow
-    carry a policy that silently does nothing.
+    ``claude-agent-sdk`` never reads it; the conductor lint refuses it there.
     """
 
     context_tier: ContextTier | None = None
-    """Which context window to ask for, where the model offers a choice.
-
-    Honoured by ``copilot`` and ``aca`` only. Refused on the rest by the
-    conductor lint, for the same reason as ``retry``.
-    """
+    """Which context window to ask for. Honoured by ``copilot`` and ``aca`` only."""
 
     session_key: str | None = None
     dialog_trigger: str | None = None
     """When set, the node may pause after running and converse with the person.
 
-    An evaluator judges the node's output against this criterion and decides
-    whether to open a multi-turn conversation. Only a model call can do this —
-    Conductor rejects it on gates, scripts, waits and terminals, which is why
-    this field exists on this class and nowhere else.
+    An evaluator judges the output against this criterion. Model calls only.
     """
 
     def __post_init__(self) -> None:
@@ -521,12 +472,7 @@ class AgentNode(Node):
 
 @dataclass(frozen=True, slots=True)
 class GateChoice:
-    """One option offered to the human at a gate.
-
-    Carries no route: the target belongs to the graph, so ``Pipeline.branch``
-    supplies it. That keeps a gate reusable across pipelines and keeps every
-    edge in one place.
-    """
+    """One option offered to the human at a gate. The route comes from ``Pipeline.branch``."""
 
     value: str
     label: str
@@ -538,8 +484,7 @@ class GateChoice:
 class GateNode(Node):
     """A human decision point. Conductor ``type: human_gate``.
 
-    Outgoing edges are emitted as ``options[].route``; a ``routes:`` block on a
-    gate validates and is then ignored by the engine.
+    Outgoing edges are emitted as ``options[].route``; ``routes:`` is ignored here.
     """
 
     prompt: str | Template
@@ -551,7 +496,7 @@ class GateNode(Node):
         if not self.choices:
             raise CompositionError(f"gate {self.node_id!r} requires at least one choice")
         values = [c.value for c in self.choices]
-        dupes = {v for v in values if values.count(v) > 1}
+        dupes = _repeated(values)
         if dupes:
             raise CompositionError(
                 f"gate {self.node_id!r} has duplicate choice values: {sorted(dupes)}"
@@ -570,10 +515,8 @@ class GateNode(Node):
     def outputs(self) -> tuple[OutputPort, ...]:
         """The gate's output shape, which Conductor fixes rather than declares.
 
-        ``selected`` carries the chosen value. Each choice with a ``prompt_for``
-        contributes a port of that name, read from ``additional_input``. Exposing
-        them as ports is what lets a rejection note be wired back into the loop
-        with the same type checking as any other edge.
+        ``selected`` carries the chosen value; each ``prompt_for`` contributes a
+        port of that name, read from ``additional_input``.
         """
         ports = [OutputPort("selected", PortType.STRING, "The chosen option value")]
         seen: set[str] = set()
@@ -589,13 +532,7 @@ class GateNode(Node):
         return port_name if port_name == "selected" else f"additional_input.{port_name}"
 
     def guard_depth(self, port_name: str) -> int:
-        """``selected`` is always there; a free-text field is not.
-
-        Verified against the engine's own Jinja settings: with only the node
-        name guarded, reading a field the chosen option never asked for raises
-        "'dict object' has no attribute 'notes'", and with ``additional_input``
-        absent entirely it raises one segment earlier.
-        """
+        """``selected`` is always there; a free-text field is not."""
         return 0 if port_name == "selected" else 2
 
     def template_strings(self) -> Iterator[str]:
@@ -615,9 +552,7 @@ class ScriptNode(Node):
     args: tuple[str | Template, ...] = ()
     env: Mapping[str, str] | None = None
     stdin: str | Template | None = None
-    """What to pipe to the process. A ``Template`` so a step can be handed a
-    value another step produced — writing a report to a file is a script whose
-    whole payload is somebody else's output."""
+    """What to pipe to the process. A ``Template`` to pipe another step's output."""
 
     timeout: int | None = None
     working_dir: str | None = None
@@ -625,32 +560,17 @@ class ScriptNode(Node):
     enforce_outputs: bool = True
     """Whether ``declared_outputs`` is also emitted as Conductor's ``output:``.
 
-    On, stdout is a contract: the engine parses it as JSON and raises unless it
-    is an object carrying these fields. Off, the ports still type every
-    reference at composition and still name what a route may read — Conductor
-    merges parsed stdout over ``{stdout, stderr, exit_code}`` either way — but
-    nothing is checked once the command has run.
-
-    Off exists for one reason. The validation raise happens *before* routes are
-    evaluated, so a command that dies takes the workflow with it and a route
-    written for its failure can never fire. Giving the enforcement up is the
-    price of the branch, and ``stdlib.try_shell`` is where that trade is made
-    deliberately rather than by hand.
+    On, the engine parses stdout as JSON and raises unless it carries these
+    fields — before routes are evaluated, so a failure route can never fire.
+    Off, the ports still type references at composition but nothing is checked.
     """
 
     uses: tuple[str, ...] = ()
     """Names of pipeline declarations this step was built from.
 
-    A step built from an ``Integration`` or a ``Datasource`` carries that
-    thing's program in ``args``, and from there it is opaque — which means a
-    pipeline can reach a production database, or post as somebody, through a
-    step whose requirement nothing ever recorded. Preflight would report no
-    requirements and pass, the start gate would list nothing, and the first
-    anyone knew of it would be a credential missing mid-run.
-
-    Names rather than the objects: this layer knows what a declaration is
-    called and never what it is for. The lint resolves them against the
-    pipeline's own declarations and refuses one that is not there.
+    What preflight and the start gate read, since the program itself is opaque
+    once it is in ``args``. Names only; the lint resolves them against the
+    pipeline's declarations.
     """
 
     def __post_init__(self) -> None:
@@ -687,8 +607,7 @@ class ScriptNode(Node):
 class ComputeNode(Node):
     """A zero-cost computation. Conductor ``type: set`` — no provider call.
 
-    Exactly one of ``value`` or ``values`` is set, which is Conductor's own
-    requirement; the constructor rejects both and neither.
+    Exactly one of ``value`` or ``values`` is set.
     """
 
     value: str | None = None
@@ -720,27 +639,12 @@ class ComputeNode(Node):
     def emits_output_schema(self) -> bool:
         """Never. A ``set`` step's shape is decided by the engine, not declared.
 
-        Both forms fail if a schema is written, and both fail *after* the step
-        has run. A single ``value:`` produces a scalar, and Conductor refuses a
-        schema on one: "declares an output schema but its rendered value is a
-        int, not a dict". A ``values:`` block produces a dict, but each binding's
-        type comes from a YAML load of its rendered text (executor/set_step.py),
-        with no per-key override — so a binding that renders as ``no`` arrives as
-        a boolean and a declared ``string`` fails validation.
-
-        The ports stay known to ictus, so references to them are still typed and
-        checked at composition. They are simply not written to the file.
+        The ports stay known to ictus and are still typed at composition.
         """
         return False
 
     def output_ref(self, port_name: str) -> str:
-        """A single ``value:`` is stored as the bare scalar, not wrapped in a key.
-
-        Verified on a live run: reading ``tally.output.value`` off a
-        ``value:``/``output_type: number`` step raises "'int object' has no
-        attribute 'value'". Only the ``values:`` form produces a mapping, so
-        only it has sub-paths.
-        """
+        """A single ``value:`` is the bare scalar; only ``values:`` has sub-paths."""
         return port_name if self.values is not None else ""
 
     def template_strings(self) -> Iterator[str]:
@@ -777,10 +681,7 @@ class WaitNode(Node):
 class TerminateNode(Node):
     """An explicit exit. Conductor ``type: terminate``.
 
-    A node with no outgoing edge implicitly means ``$end``, which makes a
-    forgotten edge indistinguishable from an intended finish. Terminating
-    explicitly gives the run a distinguishable exit status and marks the stop
-    as deliberate in the event log.
+    Gives the run an exit status, which a node simply left unrouted does not.
     """
 
     status: Literal["success", "failed"]
@@ -823,9 +724,7 @@ class TerminateNode(Node):
 class Question:
     """One thing to ask a person.
 
-    ``id`` is the key its answer lands under, so downstream references survive
-    a question being inserted above them. Leave it unset only for questions
-    nothing reads by name.
+    ``id`` is the key its answer lands under. Unset for answers nothing reads.
     """
 
     text: str
@@ -853,16 +752,11 @@ class Question:
 
 @dataclass(frozen=True, kw_only=True, eq=False)
 class QuestionsNode(Node):
-    """Ask a person for things the run could not work out. ``type: questions``.
+    """Ask a person for values. Conductor ``type: questions``.
 
-    Distinct from a gate: a gate offers a decision among known options, this
-    collects *values*. All of them in one engine step — N questions cost one
-    iteration, not N.
-
-    Either the questions are known when the pipeline is written, or an upstream
-    node produces them: a ticket touching an unknown number of repositories
-    cannot have its questions written in advance. Exactly one of ``questions``
-    and ``source`` is set, which is Conductor's rule and this constructor's.
+    A gate offers a decision; this collects values. N questions cost one
+    iteration. Exactly one of ``questions`` (known when written) and ``source``
+    (produced by an earlier node) is set.
     """
 
     questions: tuple[Question, ...] = ()
@@ -879,7 +773,7 @@ class QuestionsNode(Node):
                 "(known when written) or 'source' (produced by an earlier node)"
             )
         ids = [q.id for q in self.questions if q.id]
-        dupes = {i for i in ids if ids.count(i) > 1}
+        dupes = _repeated(ids)
         if dupes:
             raise CompositionError(
                 f"questions node {self.node_id!r} reuses answer id(s) {sorted(dupes)}"
@@ -892,12 +786,7 @@ class QuestionsNode(Node):
 
     @property
     def outputs(self) -> tuple[OutputPort, ...]:
-        """The fixed shape, plus one port per question that named itself.
-
-        Conductor fixes the output of this kind, so nothing is declared by the
-        author — but an inline question with an ``id`` is known here, and giving
-        it a port is what lets ``node.ref("repo_path")`` be checked.
-        """
+        """The engine-fixed shape, plus one port per question that named itself."""
         ports = [
             OutputPort("answers", PortType.OBJECT, "Every answer, keyed by question id"),
             OutputPort("transcript", PortType.STRING, "The exchange, as text"),
@@ -937,9 +826,8 @@ class QuestionsNode(Node):
 class SubGraphNode(Node):
     """A nested workflow. Conductor ``type: workflow``.
 
-    Emitted by ``Stage``; not usually constructed directly. This is Conductor's
-    only nesting construct — it has its own entry point, its own graph, and
-    costs the parent exactly one iteration.
+    Emitted by ``Stage``. Has its own entry point and graph, and costs the
+    parent one iteration.
     """
 
     target: str
@@ -952,12 +840,7 @@ class SubGraphNode(Node):
 
     @property
     def outputs(self) -> tuple[OutputPort, ...]:
-        """The child's exposed results.
-
-        Known to ictus but never emitted: the child declares its own ``output:``
-        map, and re-declaring a schema on the parent node would be a second
-        source of truth for the same values.
-        """
+        """The child's exposed results. Known to ictus, never emitted."""
         return self.declared_outputs
 
 
@@ -968,34 +851,22 @@ OUTCOME_PORT = "outcome"
 class ScopeNode(SubGraphNode):
     """A scope placed in a parent, carrying its outcome vocabulary with it.
 
-    The vocabulary travels on the node rather than living in the parent's head:
-    ``branch_on_outcome`` reads it back to check that every exit is routed and
-    that no route names an outcome the scope cannot produce.
+    ``branch_on_outcome`` reads the vocabulary back to check the routing.
     """
 
     outcomes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in self.outcomes:
+            if coerced_outcome(name):
+                raise CompositionError(
+                    f"scope {self.node_id!r} cannot use the outcome {name!r}: Conductor "
+                    "parses a rendered output with json.loads, so it would arrive as a "
+                    "non-string and every comparison against it would silently fail"
+                )
+        super().__post_init__()
 
     @property
     def outcome(self) -> Ref:
         """The port a parent branches on."""
         return self.ref(OUTCOME_PORT)
-
-
-def render_output_schema(ports: Sequence[OutputPort]) -> YamlDict:
-    """Lower output ports to Conductor's ``output:`` block."""
-    out: YamlDict = {}
-    for port in ports:
-        entry: dict[str, YamlValue] = {"type": port.port_type.value}
-        if port.description:
-            entry["description"] = port.description
-        if port.element is not None:
-            # The shape each entry must have. This is the only thing that tells
-            # the model what keys to emit; a fan-out over the array reads them.
-            entry["items"] = {
-                "type": "object",
-                "properties": {
-                    name: {"type": port_type.value} for name, port_type in port.element.items()
-                },
-            }
-        out[port.name] = entry
-    return out

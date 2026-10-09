@@ -1,9 +1,7 @@
 """Declared requirements and the preflight that enforces them.
 
-The split under test: ``validate`` asks whether a workflow is well-formed and
-must pass on a machine with no credentials at all; ``preflight`` asks whether
-*this* machine can run it. Conflating them would make the committed artifact
-uncheckable in CI.
+``validate`` asks whether a workflow is well-formed and must pass with no
+credentials at all; ``preflight`` asks whether this machine can run it.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from ictus import (
     Stage,
 )
 from ictus.interfaces.conductor import conductor
-from ictus.interfaces.conductor.mcp import mcp_servers_block
+from ictus.interfaces.conductor.emit.mcp import mcp_servers_block
 
 STR = PortType.STRING
 
@@ -178,10 +176,8 @@ def _with_tool(*tools: Executable) -> Pipeline:
 class TestDeclaredExecutables:
     """A tool a step checks its claims against is a requirement like any other.
 
-    The failure mode is what makes this worth refusing on: a missing MCP server
-    breaks a step, but a missing *reference* tool does not — the step runs, the
-    lookup fails, and the model reports the thing it was checking as absent.
-    That answer costs a full run and is indistinguishable from a real one.
+    A missing MCP server breaks a step; a missing reference tool does not —
+    the step runs, the lookup fails, and the model reports absence.
     """
 
     def test_a_missing_command_blocks_the_launch(self) -> None:

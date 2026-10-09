@@ -1,28 +1,19 @@
 """Tell somebody something, as a step in the graph. No model call.
 
-Nothing here knows where a report goes. An ``Integration`` carries the program
-that sends one, and this builds the step that runs it — so a second destination
-is a new module under ``ictus.notify`` and no change at all to the graph, the
-stdlib, or any pipeline already written.
+Nothing here knows where a report goes: an ``Integration`` carries the program
+that sends one, and this builds the step that runs it.
 
-Being a node is the advantage over watching from outside. It is costed against
-``max_iterations``, routed like anything else, and visible in the dashboard and
-in ``ictus trace``. What it cannot report is what no step can see: a budget
-tripping, the engine being killed. That is ``ictus watch``.
+Being a node means it is costed against ``max_iterations``, routed like
+anything else, and visible in the dashboard and in ``ictus trace``. What no
+step can see — a budget tripping, the engine being killed — is ``ictus watch``.
 
-A report never fails the run. The step always succeeds; one that could not
-deliver says ``posted: "false"`` and leaves its reason on stderr, which the
-dashboard and ``ictus trace`` both show. The alternative was tried first and it
-is backwards: a channel being down, or a token rotated mid-run, ended a run
-whose work had succeeded — at the gate, or just before the finish, after
-everything had been paid for. Whether the variables a destination needs are set
-is checked before the run starts, by preflight, which is where a misconfigured
-destination belongs.
+A report never fails the run: the step always succeeds, and one that could not
+deliver says ``posted: "false"`` with its reason on stderr. Whether a
+destination's variables are set is preflight's.
 
-Most pipelines should not call this directly. ``pipeline.integrate(...)`` attaches
-a destination to every gate and exit at once and wires the thread between them,
-which is the mechanical part nobody should be writing by hand. Reach for this
-when one particular point deserves one particular sentence.
+Most pipelines want ``pipeline.integrate(...)`` instead, which attaches a
+destination to every gate and exit at once. Reach for this when one particular
+point deserves one particular sentence.
 """
 
 from __future__ import annotations
@@ -43,10 +34,8 @@ if TYPE_CHECKING:
 
 __all__ = ["POSTED_PORT", "THREAD_PORT", "announce"]
 
-#: What an announcement publishes so a later one can hang under it.
-#:
-#: Named for what it is rather than for what any service calls it. Slack's own
-#: spelling is ``thread_ts``, and translating it is the integration's job.
+#: What an announcement publishes so a later one can hang under it. Named for
+#: what it is; translating to a service's spelling is the integration's job.
 THREAD_PORT = "thread"
 
 #: "true" when the report landed, "false" when it could not be sent. The step
@@ -67,15 +56,11 @@ def announce(
 ) -> ScriptNode:
     """Send ``text`` through ``to``, as a step in the graph.
 
-    ``thread`` is the port an earlier announcement published, so this one hangs
-    under it. The input that needs is declared for you; the *data edge* is yours
-    to wire with ``feed``, and the lint refuses the graph without it.
+    ``thread`` is the port an earlier announcement published. The input is
+    declared for you; the data edge is yours to wire with ``feed``.
 
-    ``answers=<gate>`` puts that gate's choices in the message as buttons. They
-    are read off the gate and cannot be spelled out by hand: a renamed option
-    would leave a button that answers nothing, and a value the gate does not
-    offer is worse than that — the engine accepts the answer and then fails the
-    run on it.
+    ``answers=<gate>`` puts that gate's choices in the message as buttons, read
+    off the gate so they cannot drift from it.
     """
     if not to.announces:
         raise CompositionError(
@@ -105,17 +90,13 @@ def announce(
         args=(
             "-c",
             to.program,
-            # Through argv rather than baked into the program: these are rendered
-            # values, and interpolating one into source is how a quote in
-            # somebody's data becomes a syntax error at run time. The fallback
-            # covers a parent that printed no thread; an undefined reference is
-            # a template error, and that would fail the step this exists to keep
-            # from failing.
+            # Through argv, not interpolated into the program: a quote in
+            # somebody's data would otherwise be a syntax error. The fallback
+            # covers a parent that printed no thread.
             as_template(thread.or_else("")) if thread is not None else "",
             asks,
-            # The program gives up at `timeout`; the engine kills the step five
-            # seconds later. The gap is what keeps a slow report from being a
-            # failed step.
+            # The program gives up at `timeout`, the engine five seconds
+            # later, so a slow report is not a failed step.
             str(timeout),
         ),
         uses=(to.name,),
@@ -125,10 +106,8 @@ def announce(
             OutputPort(THREAD_PORT, PortType.STRING, "What a later report hangs under"),
             OutputPort(POSTED_PORT, PortType.STRING, "'false' when the report was not sent"),
         ),
-        # Not a contract the engine enforces. Its check runs before routes are
-        # evaluated and fails the run on stdout it cannot parse; the program
-        # always prints both fields, and a reference that finds neither falls
-        # back rather than raising.
+        # The engine's check runs before routes are evaluated and would fail
+        # the run on unparseable stdout. A missing reference falls back.
         enforce_outputs=False,
     )
 
@@ -136,14 +115,10 @@ def announce(
 def _asked(node_id: str, answers: GateNode | None, to: Integration) -> str:
     """The buttons, as the JSON the sending program reads from argv.
 
-    Taking the gate itself is the point: its choices *are* the buttons, so the
-    two cannot drift and a renamed option cannot leave a dead one.
-
-    Each button also says which step posted it, which is how a press finds its
-    run and how a press on an older message is told from one on the current
-    question: the run's own history records what every step posted. And a
-    choice that asks for text says so, so whatever answers it can ask too
-    rather than sending the choice without the text it exists to collect.
+    Built from the gate's own choices, so the two cannot drift. Each button
+    names the step that posted it, which is how a press finds its run and how
+    an older message is told from the current question, and says whether the
+    choice asks for text.
     """
     if answers is None:
         return ""

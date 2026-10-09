@@ -1,20 +1,13 @@
 """Fan out over a list whose length is only known at run time.
 
-``Pipeline.parallel`` needs its members written down, so it can only express a
-fan-out whose width the author knew. The shape that actually recurs — "split
-this ticket into sub-tickets, then work each one" — has a width that comes out
-of an earlier step. Conductor's ``for_each`` is the construct for it, and ictus
-did not use it at all.
+As against ``Pipeline.parallel``, whose members are written down.
 
-What a group produces is one value under its own name: ``outputs`` (a list, or a
+A group produces one value under its own name: ``outputs`` (a list, or a
 mapping when ``key_by`` is set), ``errors`` keyed the same way, and ``count``.
-Routes are evaluated once, after every item has finished, and read that
-aggregate — an item cannot route.
+Routes are evaluated once, after every item has finished; an item cannot route.
 
-The loop variable is the part worth typing. Inside the body it is addressed as
-``{{ item.field }}`` — no ``.output.`` — and the name is checked against
-Conductor's reserved set, so a group named ``output`` or ``context`` is refused
-here rather than at load time.
+The loop variable is addressed as ``{{ item.field }}`` — no ``.output.`` — and
+its name is checked against Conductor's reserved set.
 """
 
 from __future__ import annotations
@@ -30,7 +23,7 @@ from ictus.graph.ref import Origin, Ref
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ictus.graph.pipeline import FailureMode
+    from ictus.graph.composition import FailureMode
 
 __all__ = ["COUNT_PORT", "ERRORS_PORT", "OUTPUTS_PORT", "Item", "MapGroup"]
 
@@ -42,11 +35,9 @@ COUNT_PORT = "count"
 _RESERVED = frozenset({"workflow", "context", "output", "_index", "_key"})
 
 # What a for_each iteration may be. Conductor rejects a terminal, a wait, a
-# script and a questions step outright. A sub-workflow it would accept, but ictus
-# cannot yet express one: a child's parameters are bound by `input_mapping`,
-# which is built from graph edges, and there is no way to wire a loop *item* into
-# a child's port. Emitting it anyway gave every iteration the parent's own inputs
-# instead of the item, so it is refused until the binding exists.
+# script and a questions step. A sub-workflow it would accept, but a child's
+# parameters are bound by `input_mapping`, built from graph edges, and there is
+# no way to wire a loop item into a child's port.
 _ITERABLE = frozenset({NodeKind.LLM_CALL, NodeKind.COMPUTATION})
 
 
@@ -54,9 +45,7 @@ _ITERABLE = frozenset({NodeKind.LLM_CALL, NodeKind.COMPUTATION})
 class Item:
     """The loop variable, as something references can be taken from.
 
-    Its fields are declared rather than discovered: the source array's element
-    shape is not knowable from the array's own port type, and an undeclared
-    field read inside the body is a template error on an item nobody looked at.
+    Fields are declared: an array's port type does not carry its element shape.
     """
 
     name: str
@@ -83,11 +72,7 @@ class Item:
 
 @dataclass(frozen=True, eq=False)
 class MapGroup:
-    """One body, run once per element of an array resolved at run time.
-
-    ``node_id`` is deliberately the same attribute a node uses, so every routing
-    path treats a map group, a parallel group and a node identically.
-    """
+    """One body, run once per element of an array resolved at run time."""
 
     group_id: str
     source: Ref
@@ -95,17 +80,10 @@ class MapGroup:
     body: Node
     """The step run per item.
 
-    ``expect_items`` is how many items the caller expects at most. It buys
-    iteration budget; it does not cap anything. Conductor's ``for_each`` has no
-    length limit — ``max_concurrent`` batches, it does not truncate — and the
-    array comes out of an earlier step, so nothing in the graph bounds it.
-
-    Named for what it does because the consequence of getting it wrong is
-    expensive and one-directional: a longer array runs *every* item, paying for
-    all of them, and the step after the group is the one that dies on the
-    iteration budget. If the length is genuinely unbounded, cap it in the step
-    that produces the array — tell the model the limit and declare it in the
-    port description — rather than hoping this number holds.
+    ``expect_items`` buys iteration budget; it caps nothing. ``for_each`` has
+    no length limit and ``max_concurrent`` batches rather than truncating, so a
+    longer array runs every item and the step after the group dies on the
+    budget. Cap the length in the step that produces the array.
     """
     expect_items: int
     description: str = ""
@@ -181,7 +159,6 @@ class MapGroup:
 
     @property
     def node_id(self) -> str:
-        """The identifier routing resolves against."""
         return self.group_id
 
     @property
@@ -195,7 +172,6 @@ class MapGroup:
         )
 
     def get_output(self, port: str) -> OutputPort:
-        """One of the group's aggregate ports, by name."""
         for candidate in self.outputs:
             if candidate.name == port:
                 return candidate
@@ -207,14 +183,12 @@ class MapGroup:
     def output_ref(self, port_name: str) -> str:
         """The path under the group's own name that reads this port.
 
-        A for-each group stores one aggregate — ``outputs``, ``errors``,
-        ``count`` — directly under its name rather than an ``output:`` map, so
-        the interface layer drops the ``.output.`` for it.
+        A for-each group stores its aggregate directly under its name, so the
+        interface layer drops the ``.output.``.
         """
         return port_name
 
     def ref(self, port: str) -> Ref:
-        """A reference to one of the group's aggregate outputs."""
         found = self.get_output(port)
         return Ref(
             source_id=self.group_id, port=port, port_type=found.port_type, origin=Origin.NODE

@@ -1,16 +1,10 @@
 """Reading from Postgres, through ``psql``.
 
-``psql`` rather than a driver because the program is standard library only, the
-way every emitted program here is: a workflow that needed ``psycopg`` installed
-wherever it runs would be a dependency the YAML cannot declare and preflight
-cannot check. ``psql`` is a command, and a command is something a pipeline can
-require and preflight can refuse on.
+``psql`` rather than a driver, so the program stays standard-library only and
+its one requirement is a command a pipeline can declare and preflight check.
 
-Read-only is set on the session as well as checked on the statement.
-``default_transaction_read_only`` makes the server itself refuse a write, so a
-statement that gets past the guard still does not land. Neither is a substitute
-for connecting as a user with no write grants, which is the only layer that
-survives somebody trying.
+``default_transaction_read_only`` is set on the session as well as the
+statement being checked. Neither substitutes for a user with no write grants.
 """
 
 from __future__ import annotations
@@ -24,7 +18,7 @@ from ictus.sources._guard import GUARD_SOURCE
 if TYPE_CHECKING:
     from ictus.graph.requirements import EnvVar
 
-__all__ = ["readonly_postgres"]
+__all__ = ["PSQL", "SETUP_HINT", "readonly_postgres"]
 
 PSQL = "psql"
 
@@ -91,8 +85,7 @@ def main():
     if why:
         return fail("refused: " + why)
     env = dict(os.environ)
-    # The server's own refusal, in front of the guard's. A statement that gets
-    # past the text check still cannot write through this session.
+    # The server's own refusal, in front of the guard's.
     env["PGOPTIONS"] = (
         "-c default_transaction_read_only=on -c statement_timeout=" + str(seconds * 1000)
     )
@@ -135,9 +128,8 @@ def report(rows, total, truncated):
 
 
 def fail(why):
-    # Never a non-zero exit. A query that could not run is a fact for the next
-    # step to read, not a reason to end a run whose work so far succeeded; the
-    # reason goes to stderr, which the dashboard and `ictus trace` both show.
+    # Never a non-zero exit: a query that could not run is a fact for the next
+    # step. The reason goes to stderr.
     print(why, file=sys.stderr)
     print(json.dumps({"rows": "[]", "count": "0", "ran": "false", "why": why}))
 

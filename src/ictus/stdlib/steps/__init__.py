@@ -1,8 +1,6 @@
 """Steps that cost no model call.
 
-Every one of these is a step type Conductor implements natively. Modelling any
-of them as an LLM agent means a billable, non-deterministic call standing in for
-something the engine does for free.
+Each is a step type Conductor implements natively.
 """
 
 from __future__ import annotations

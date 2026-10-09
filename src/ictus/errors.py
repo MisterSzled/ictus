@@ -1,10 +1,29 @@
-"""Errors raised during pipeline composition and emission.
+"""Everything ictus raises, and the one base they share.
 
-Every error names what was being attempted and where, so a failure at the
-composition boundary is actionable without reading the traceback.
+``IctusError`` is the root, and it covers more than composition: ``ConfigError``
+when a folder's ``config.yaml`` will not parse, ``RunSpecError`` for its
+``input.md``, ``HandshakeError`` from the websocket client, ``SlackError`` from
+the bridge. A caller that wants to catch *anything ictus did* catches that one.
+
+The subclasses below are the composition and emission half, and they are here
+rather than beside the code that raises them because every package raises them:
+``graph`` while a pipeline is being written, ``lint`` while it is being checked,
+``interfaces`` while it is being lowered.
+
+Every error names what was being attempted and where, so a failure is
+actionable without reading the traceback.
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "CompositionError",
+    "EmitError",
+    "IctusError",
+    "LintError",
+    "PortTypeError",
+    "UnknownPortError",
+]
 
 
 class IctusError(Exception):

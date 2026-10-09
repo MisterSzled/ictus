@@ -33,7 +33,7 @@ def bindings(
     values exist but no typed reference can name them, and the step is
     write-only. The types are ictus's, not the engine's — Conductor decides each
     binding's type by YAML-loading its rendered text, so a binding that renders
-    as ``no``, ``3`` or ``2024-01-01`` arrives as a boolean, an integer or a
+    as ``3`` or ``2024-01-01`` arrives as an integer or a
     date whatever this says. Where the type has to hold, use one ``constant``
     per value and set its ``output_type``.
     """

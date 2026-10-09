@@ -1,0 +1,1 @@
+Each voice was checked on its own before you saw it. Where a claim did not survive, it is struck out below its author: do not carry it into the report, and do not quietly restate it in your own words. A voice whose position rested on a struck claim has a weaker position than it thinks, and saying so is the report's job.

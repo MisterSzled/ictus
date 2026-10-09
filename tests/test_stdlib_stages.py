@@ -1,8 +1,8 @@
 """The stage stdlib.
 
-Each stage is a whole sub-graph, so the thing worth asserting is that its body
-is a valid workflow on its own and that its contract is the shape a parent can
-wire to. Both stages and their bodies go through the real Conductor validator.
+Each stage is a whole sub-graph, so what is asserted is that its body is a
+valid workflow on its own and its contract is wirable. Both go through the
+real Conductor validator.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import pytest
 from ictus import AgentNode, OutputPort, Pipeline, PortType, equals
 from ictus.errors import CompositionError
 from ictus.graph.node import GateNode, NodeKind
+from ictus.graph.traversal import require_loop_bound
 from ictus.interfaces.conductor import ConductorBackend
 from ictus.lint import lint_pipeline
 from ictus.stdlib import (
@@ -97,8 +98,7 @@ class TestConverge:
     def test_the_judge_reference_is_guarded_by_the_compiler(self) -> None:
         """The author writes a reference; the guard is the compiler's job.
 
-        The first pass renders before the judge has run, and Conductor's strict
-        undefined kills the step. Nothing in the stage source says "is defined".
+        Nothing in the stage source says "is defined".
         """
         scope = _converge()
         drafted = next(n for n in scope.body.nodes if n.node_id == "draft")
@@ -115,7 +115,7 @@ class TestConverge:
 
     def test_the_loop_bound_follows_the_pass_count(self) -> None:
         assert _converge(passes=2).body.loop_passes == 2
-        _converge(passes=6).body.require_loop_bound()
+        require_loop_bound(_converge(passes=6).body)
 
     def test_rejection_notes_are_fed_back(self) -> None:
         deps = [(d.source.node_id, d.target.node_id) for d in _converge().body.data_deps]
@@ -124,9 +124,8 @@ class TestConverge:
     def test_the_retry_edge_re_enters_above_the_counter(self) -> None:
         """A retry that rejoins below the counter leaves it stuck on pass one.
 
-        The exhausted exit is then unreachable and the loop dies on Conductor's
-        iteration budget instead — which is the failure the construct exists to
-        remove. Caught on a live run, not by the validator.
+        The exhausted exit is then unreachable and the loop dies on
+        Conductor's iteration budget instead.
         """
         scope = _converge()
         judge = next(n for n in scope.body.nodes if n.node_id == "judge")
@@ -304,11 +303,7 @@ def test_two_stages_compose_into_one_parent(validates: Callable[[Pipeline], None
 
 
 class TestReviewOptions:
-    """A reviewer needs to say *why*, and *where the work should go back to*.
-
-    Approve/reject alone cannot express either: the next attempt is a guess, and
-    the caller has one branch where it needs several.
-    """
+    """A reviewer needs to say why, and where the work should go back to."""
 
     @staticmethod
     def _stage() -> Stage:

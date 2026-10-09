@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ictus.errors import CompositionError
-from ictus.graph.pipeline import END
+from ictus.graph.composition import END
 from ictus.graph.ports import InputPort, OutputPort, PortType
 from ictus.graph.stage import Stage
 from ictus.stdlib.steps.shell import shell
@@ -36,8 +36,7 @@ class ScriptStep:
     receives_previous: bool = False
     """Whether the previous step's output is appended to this step's arguments.
 
-    Off by default: most sequences are ordered rather than piped, and passing a
-    value a command does not expect is worse than not passing it.
+    Off by default: most sequences are ordered rather than piped.
     """
 
 
@@ -51,19 +50,14 @@ def script_sequence(
 ) -> Stage:
     """Run commands in order, threading each one's output into the next.
 
-    This is the "reset the database" shape: several ordinary shell steps that
-    are only worth naming as a unit. As a stage it compiles to its own workflow
-    file, so the whole sequence costs the calling pipeline one iteration rather
-    than one per command.
+    A stage, so the whole sequence costs the caller one iteration rather than
+    one per command.
 
-    Every command receives ``parameter`` as its final argument. A step with
-    ``receives_previous`` also receives the previous step's output after it;
-    without that flag the steps are merely *ordered*, and the declared
-    dependency exists only to establish that order.
+    Every command receives ``parameter`` as its final argument; a step with
+    ``receives_previous`` also receives the previous step's output after it.
 
-    A relative command resolves against ``working_dir``, defaulting to the
-    directory the run was launched from — set it explicitly rather than relying
-    on that.
+    A relative command resolves against ``working_dir``, which defaults to the
+    directory the run was launched from.
 
     Contract: input named by ``parameter`` (string) in, output ``result``
     (string) out, taken from the last step.

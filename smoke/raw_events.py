@@ -1,15 +1,12 @@
 """Print every envelope Slack sends, exactly as it sends it.
 
-For the case where the listener is plainly running and plainly not reacting.
-It answers the only two questions worth asking in that order: is the event
-arriving at all, and if it is, what does the text actually say? Slack composes
-a message for a human reader — a link becomes ``<url|label>``, bold becomes
-``*bold*``, an unfurl arrives later as a separate edit — so the string a
-trigger matches against is rarely the string on screen.
+For when the listener is running and not reacting: is the event arriving, and
+what does its text actually say? Slack composes for a human reader — a link
+becomes ``<url|label>``, bold becomes ``*bold*`` — so the string a trigger
+matches is rarely the string on screen.
 
-Run it with the listener stopped. Slack delivers an event to exactly one of an
-app's open sockets, so two connections means half the events go to the other
-one and the dump looks intermittent for no reason.
+Run it with the listener stopped: Slack delivers an event to exactly one of an
+app's open sockets.
 
     python3 smoke/raw_events.py            # everything
     python3 smoke/raw_events.py message    # only this envelope type
@@ -23,8 +20,8 @@ import json
 import os
 import sys
 
-from ictus.notify.slack.listen import _parsed, open_socket
-from ictus.websocket import connect
+from ictus.bridge.slack.listen import _parsed, open_socket
+from ictus.net.websocket import connect
 
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
 

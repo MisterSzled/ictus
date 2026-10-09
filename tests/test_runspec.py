@@ -8,7 +8,7 @@ import pytest
 
 from ictus import END, AgentNode, InputPort, OutputPort, Pipeline, PortType, tpl
 from ictus.errors import CompositionError
-from ictus.runspec import PipelineFolder, RunSpecError, read_input_file, split_frontmatter
+from ictus.runspec.inputs import PipelineFolder, RunSpecError, read_input_file, split_frontmatter
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,8 +92,7 @@ def test_a_thematic_break_further_down_is_body_not_metadata() -> None:
 def test_an_empty_frontmatter_block_is_a_block_not_a_body() -> None:
     """`---\\n---\\n` is how a pipeline with no inputs says so.
 
-    It used to fail the match outright, so the delimiters themselves became the
-    body and the run was refused for carrying prose it did not have.
+    A failed match makes the delimiters themselves the body.
     """
     front, body = split_frontmatter("---\n---\n", where="x")
     assert front == {}

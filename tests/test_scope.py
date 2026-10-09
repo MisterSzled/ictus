@@ -13,7 +13,7 @@ from ictus.graph.ports import OutputPort
 from ictus.graph.ref import equals, tpl
 from ictus.interfaces.conductor import conductor
 from ictus.lint import lint_pipeline
-from ictus.stdlib.terminals import succeed
+from ictus.stdlib.exits import succeed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -161,6 +161,19 @@ def test_an_outcome_json_would_coerce_is_refused(name: str) -> None:
     """`_maybe_parse_json` turns these into non-strings, so every == test fails silently."""
     with pytest.raises(CompositionError, match=r"json\.loads"):
         outcome_scope(stage_id="s", outcomes=("ok", name))
+
+
+@pytest.mark.parametrize("name", ["true", "False", "None", "null", "1", "2.5", "[x", "{y"])
+def test_the_node_refuses_it_too_without_going_through_a_scope(name: str) -> None:
+    """``ScopeNode`` is exported from ``ictus`` and can be built directly.
+
+    The vocabulary was checked only by the builder, so a node constructed by
+    hand carried outcomes the builder refuses by name — and
+    ``branch_on_outcome`` then checked the routing was complete against a
+    vocabulary that could never match at run time.
+    """
+    with pytest.raises(CompositionError, match=r"json\.loads"):
+        ScopeNode(node_id="s", target="./s.yaml", outcomes=("ok", name))
 
 
 @pytest.mark.parametrize("name", ["yes", "no", "off", "n1", "found"])

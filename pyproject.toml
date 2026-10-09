@@ -1,6 +1,9 @@
 [project]
 name = "ictus"
-version = "0.0.0"
+# Pre-1.0: the stdlib's constructors are the API, and they still move. Every
+# move is in CHANGELOG.md, which is the only way somebody downstream can find
+# out — `test_changelog.py` refuses a version with no entry.
+version = "0.1.0"
 description = "Typed composition, validation and linting for multi-stage agent pipelines"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,6 +16,24 @@ dependencies = ["ruamel.yaml==0.18.10", "typer==0.20.0", "click==8.5.0"]
 
 [project.scripts]
 ictus = "ictus.cli:app"
+# A daemon, not a compiler verb. See src/ictus/bridge/__init__.py.
+ictus-bridge = "ictus.bridge.cli:app"
+
+# ictus's own adapters register the same way a third party's would. Declaring
+# them here rather than hard-coding a list is what keeps the mechanism honest:
+# a registry whose only real users are other people is one nobody notices break.
+# A pipeline still imports the constructor by name; this is how `ictus adapters`
+# knows what exists.
+[project.entry-points."ictus.notify"]
+slack_channel = "ictus.notify.slack:slack_channel"
+slack_webhook = "ictus.notify.slack:slack_webhook"
+jira_cloud = "ictus.notify.jira:jira_cloud"
+
+[project.entry-points."ictus.sources"]
+readonly_sqlite = "ictus.sources.sqlite:readonly_sqlite"
+readonly_postgres = "ictus.sources.postgres:readonly_postgres"
+readonly_postgres_fleet = "ictus.sources.fleet:readonly_postgres_fleet"
+readonly_jira = "ictus.sources.jira:readonly_jira"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ictus"]

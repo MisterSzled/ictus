@@ -27,17 +27,12 @@ def approval_gate(
 ) -> GateNode:
     """A gate offering exactly approve and reject.
 
-    Emits ``type: human_gate``. That matters beyond correctness: the fleet TUI
-    infers "at gate" solely from an unclosed ``gate_presented`` event, so a pause
-    modelled as a plain agent leaves the run reporting ``running`` forever and
-    the gate bell never rings.
+    Emits ``type: human_gate``, which is what the fleet TUI reads to show a run
+    as waiting; a pause modelled as a plain agent reports ``running`` forever.
 
     ``notes_field`` adds a free-text prompt on rejection and exposes it as an
-    output port. Feeding that port back into the loop is what makes a revise
-    cycle worth running — without it the retry re-runs with no new information.
-    Remember that a template reading it must guard with ``{% if <gate> is
-    defined %}``: the first pass has no gate output and Conductor renders with
-    strict undefined.
+    output port. A template reading it must guard with
+    ``{% if <gate> is defined %}``.
     """
     return GateNode(
         node_id=node_id,

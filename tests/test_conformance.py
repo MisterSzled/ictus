@@ -1,11 +1,9 @@
-"""The gate: everything ictus emits must load in Conductor.
-
-This is the test whose absence let five commits of unloadable YAML ship green.
-"""
+"""The gate: everything ictus emits must load in Conductor."""
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -23,10 +21,18 @@ from ictus import (
     PortType,
     ScriptNode,
     WaitNode,
+    tpl,
 )
-from ictus.config import read_config
 from ictus.graph.pipeline import Pipeline as PipelineType
-from ictus.stdlib import approval_gate, choice_gate, succeed
+from ictus.graph.traversal import require_loop_bound
+from ictus.interfaces.conductor import ConductorBackend
+from ictus.interfaces.conductor.control.launch import (
+    TYPED_INPUT_FLAG,
+    binary,
+    launch_command,
+)
+from ictus.runspec.config import read_config
+from ictus.stdlib import approval_gate, choice_gate, save_text, succeed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -191,4 +197,58 @@ def test_gate_with_notes_loop_loads(validates: Callable[[PipelineType], None]) -
     p.feed(review, "notes", draft, "notes")
     validates(p)
     # The bound is the backend's arithmetic; the graph only insists one exists.
-    p.require_loop_bound()
+    require_loop_bound(p)
+
+
+#: A Slack conversation id, and the shape that breaks: trailing zeros in the
+#: microseconds. Coerced to a float it comes back `1700000000.0002`, which is
+#: not a timestamp any message has.
+A_SLACK_TS = "1700000000.000200"
+
+
+def test_a_string_input_survives_the_engine_verbatim(tmp_path: Path) -> None:
+    """What `verbatim=` is for, asked of the engine that is installed.
+
+    `conductor run -i` guesses a type — a public contract Conductor says must
+    not change — so ictus hands strings over on `--input-json`, which that same
+    source calls hidden and internal. Depending on an internal flag is only
+    defensible if something notices when it stops working, and nothing else
+    here would: the value arrives subtly wrong rather than failing, and the run
+    reports into the wrong place while blaming a deleted message.
+    """
+    pipeline = Pipeline(pipeline_id="verbatim_input", description="Write an input back out")
+    said = pipeline.declare_input("said", PortType.STRING, description="Text that looks numeric")
+    wrote = pipeline.add(
+        save_text(
+            node_id="write_it",
+            text=tpl(said.ref()),
+            to="said.txt",
+            inputs=(InputPort("said", PortType.STRING),),
+        )
+    )
+    done_node = pipeline.add(succeed(node_id="done", reason="written"))
+    pipeline.set_entry(wrote)
+    pipeline.connect_input(said, wrote, "said")
+    pipeline.route(wrote, done_node)
+
+    for document in ConductorBackend().compile(pipeline):
+        (tmp_path / document.filename).write_text(document.content, encoding="utf-8")
+
+    command = launch_command(
+        binary(),
+        tmp_path / "verbatim_input.yaml",
+        inputs={"said": A_SLACK_TS},
+        dashboard=False,
+        workspace_instructions=False,
+        verbatim=("said",),
+    )
+    assert f"said={json.dumps(A_SLACK_TS)}" in command, "it went over the typed transport"
+
+    done = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    written = (tmp_path / "said.txt").read_text(encoding="utf-8").strip()
+    assert written == A_SLACK_TS, (
+        f"the engine handed the run {written!r}; ictus gave it {A_SLACK_TS!r}. "
+        f"If {TYPED_INPUT_FLAG} has gone or changed, every run started from a chat "
+        "service reports into the wrong conversation."
+    )

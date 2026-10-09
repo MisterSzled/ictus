@@ -1,13 +1,8 @@
 """The boundary between an ictus graph and whatever executes it.
 
 A ``Backend`` is the only thing permitted to know an engine's spelling: its
-field names, its template dialect, its iteration accounting, its CLI. Everything
-above this line describes *what* a pipeline is; everything below describes how
-one engine wants to hear it.
-
-The point is not that a second backend is planned. It is that the boundary makes
-the coupling countable: if a Conductor field name appears above this line, that
-is a defect with a name, rather than a slow drift nobody can see.
+field names, its template dialect, its iteration accounting, its CLI. An
+engine's field name above this line is a defect.
 """
 
 from __future__ import annotations
@@ -31,7 +26,6 @@ __all__ = [
     "Document",
     "PreflightIssue",
     "SignalEvent",
-    "UnsupportedFeatureError",
     "ValidationResult",
 ]
 
@@ -44,14 +38,8 @@ ENDED = frozenset({RunSignal.RUN_FINISHED, RunSignal.RUN_FAILED})
 class SignalEvent:
     """One reportable moment, with the run it happened in.
 
-    Lives on the boundary rather than inside a backend because both sides need
-    it and neither owns it: an engine produces these, and whatever reports them
-    onward consumes them without knowing which engine ran.
-
-    Its fields are the engine-neutral facts a report is made of. A backend fills
-    them in from its own payload, so nothing above it reads an engine's keys —
-    the first version carried the raw payload, and the reporting code read
-    Conductor's field names straight out of it.
+    The engine-neutral facts a report is made of, filled in by a backend from
+    its own payload.
     """
 
     signal: RunSignal
@@ -80,19 +68,12 @@ class SignalEvent:
     """Why a run or a step ended the way it did, when it says."""
 
     at_a_step: bool = False
-    """A step in the graph stands in front of this moment.
-
-    An integration attached to the pipeline has announced it from inside the
-    run already, so anything reporting from outside should not say it twice.
-    """
+    """A step in the graph stands in front of this moment, and has already
+    announced it, so a reporter outside the run should not say it twice."""
 
     replayed: bool = False
-    """Read from the run's history on attaching, rather than seen as it happened.
-
-    A watcher started, or restarted, partway through a run reads everything
-    before it to know where the run is. That is not news to anybody, and
-    reporting it again is how a gate answered an hour ago gets announced twice.
-    """
+    """Read from the run's history on attaching, rather than seen as it
+    happened. Not news, so not reported onward."""
 
     @property
     def ends_the_run(self) -> bool:
@@ -102,12 +83,8 @@ class SignalEvent:
 
 @dataclass(frozen=True, slots=True)
 class Document:
-    """One rendered file, ready to be written.
-
-    Rendered text rather than a data structure: serialization format is the
-    engine's business, and a backend that emitted JSON or a Python call graph
-    should not have to pretend it produces a mapping.
-    """
+    """One rendered file, ready to be written. Text, since the format is the
+    engine's business."""
 
     filename: str
     content: str
@@ -117,37 +94,27 @@ class Document:
 class Capabilities:
     """What an engine can actually express.
 
-    Declared rather than assumed, so a graph using a feature the target cannot
-    run is refused while it is being composed — not discovered on a live run.
+    Declared, so a graph using a feature the target lacks is refused at
+    composition.
     """
 
     name: str
     kinds: frozenset[NodeKind]
     providers: frozenset[str] = frozenset()
-    """Who can answer a model call. Empty means the engine does not constrain it.
-
-    Declared here so a misspelled provider is refused where it is written rather
-    than by the engine's own loader, which only sees it once the whole pipeline
-    has been compiled.
-    """
+    """Who can answer a model call. Empty means the engine does not constrain it."""
 
     remembering_providers: frozenset[str] = frozenset()
     """Providers whose steps can resume a session rather than starting cold.
 
-    A step that starts cold has read nothing, whatever it read last time round
-    the loop. Not every provider can carry a conversation forward, and one that
-    cannot rejects the request rather than quietly ignoring it, so which ones
-    can is worth knowing before the run.
+    One that cannot rejects the request rather than ignoring it.
     """
 
     tool_allowlists: bool = False
-    """Whether a step can name *which* tools it may use.
+    """Whether a step can name which tools it may use.
 
-    Three states, and only the middle one is universal: omitting a list means
-    "whatever the engine gives a step by default", an empty list means "none",
-    and a non-empty list means "exactly these". An engine that cannot translate
-    the third has to say so, because the alternative is a run that dies partway
-    through on a list ictus was happy to emit.
+    Three states: omitted is the engine's default set, empty is none, and a
+    non-empty list is exactly these. Only an engine that can translate the
+    third declares this true.
     """
 
     conditional_routes: bool = True
@@ -157,12 +124,8 @@ class Capabilities:
     signals: frozenset[RunSignal] = frozenset()
     """Which moments of a run this engine can actually report.
 
-    A pipeline subscribing to one that is absent is refused while it is being
-    written, for the same reason an unsupported ``NodeKind`` is: the alternative
-    is an integration that is configured, passes preflight, and never fires
-    — which looks exactly like a quiet run.
-
-    Empty means the engine reports nothing, so any subscription is refused.
+    A subscription to one that is absent is refused at composition. Empty
+    means the engine reports nothing.
     """
 
     notes: str = ""
@@ -181,24 +144,13 @@ class ValidationResult:
 class PreflightIssue:
     """Something the environment must provide before a pipeline can run.
 
-    ``remedy`` is the point: an issue nobody can act on is just a failure. It
-    should say what to type or where to click, not restate the problem.
+    ``remedy`` says what to type or where to click, not what is wrong.
     """
 
     requirement: str
     problem: str
     remedy: str
     blocking: bool = True
-
-
-class UnsupportedFeatureError(Exception):
-    """Raised when a graph needs something the chosen backend cannot express."""
-
-    def __init__(self, backend: str, missing: Sequence[str]) -> None:
-        self.backend = backend
-        self.missing = list(missing)
-        body = "\n".join(f"  - {m}" for m in missing)
-        super().__init__(f"backend {backend!r} cannot express this pipeline:\n{body}")
 
 
 @runtime_checkable
@@ -214,12 +166,7 @@ class Backend(Protocol):
         ...
 
     def lint(self, pipeline: Pipeline) -> list[str]:
-        """Engine-specific problems the generic composition rules cannot know.
-
-        Separate from ``ictus.lint`` because rules like "a route list with no
-        catch-all raises at run time" are assertions about one engine's runtime,
-        not about graphs in general.
-        """
+        """Engine-specific problems the generic composition rules cannot know."""
         ...
 
     def validate(self, paths: Sequence[Path]) -> list[ValidationResult]:
@@ -229,10 +176,8 @@ class Backend(Protocol):
     def preflight(self, pipeline: Pipeline, *, probe: bool) -> list[PreflightIssue]:
         """Check the environment can satisfy what the pipeline declares.
 
-        Separate from ``validate``: a workflow can be perfectly well-formed and
-        still be unrunnable here because a token is missing or a server is not
-        installed. ``probe`` additionally opens each declared connection, which
-        catches a wrong credential that an offline check cannot.
+        ``probe`` additionally opens each declared connection, which catches a
+        wrong credential that an offline check cannot.
         """
         ...
 
@@ -248,8 +193,6 @@ class Backend(Protocol):
         """Execute a compiled document in ``working_dir``. Returns the exit code.
 
         ``workspace_instructions`` asks the engine to read the target project's
-        own instruction files. What an engine discovers, and whether it can at
-        all, is its business; that a step should arrive knowing what the project
-        says about itself is not.
+        own instruction files; which ones it finds is its business.
         """
         ...

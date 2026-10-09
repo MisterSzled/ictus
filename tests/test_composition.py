@@ -1,7 +1,6 @@
 """Composition-time rejections.
 
-Each test asserts that an invalid graph is refused at the call that introduces
-it, not at emission and not at run time.
+Each asserts that an invalid graph is refused at the call that introduces it.
 """
 
 from __future__ import annotations
@@ -23,9 +22,11 @@ from ictus import (
     UnknownPortError,
     WaitNode,
 )
+from ictus.graph.mapping import Item
+from ictus.graph.traversal import back_edges, longest_cycle_length, require_loop_bound
 from ictus.stdlib import succeed
 
-S, N = PortType.STRING, PortType.NUMBER
+S, N, A = PortType.STRING, PortType.NUMBER, PortType.ARRAY
 
 
 def _agent(node_id: str, *, out: PortType = S, in_: PortType | None = None) -> AgentNode:
@@ -95,6 +96,31 @@ class TestMembership:
         p.add(_agent("a"))
         with pytest.raises(CompositionError, match="two nodes"):
             p.add(_agent("a"))
+
+    def test_a_node_cannot_take_a_name_a_parallel_group_holds(self) -> None:
+        """One keyspace, which two of the three error messages already claim.
+
+        ``parallel`` checked ``_groups`` and ``_by_id``; ``add`` checked only
+        ``_by_id``, so the collision was accepted in this order and refused in
+        the other. The graph then held a node and a group under one name, and
+        every ``route`` to it picked whichever the backend looked up first.
+        """
+        p = Pipeline(pipeline_id="t")
+        p.add(_agent("a"))
+        p.add(_agent("b"))
+        p.parallel("pair", (p.nodes[0], p.nodes[1]))
+        with pytest.raises(CompositionError, match="already has something named 'pair'"):
+            p.add(_agent("pair"))
+
+    def test_a_parallel_group_cannot_take_a_name_a_map_group_holds(self) -> None:
+        """``parallel`` was the one registrar that never looked at ``_maps``."""
+        p = Pipeline(pipeline_id="t")
+        body = p.add(_agent("body"))
+        src = p.add(AgentNode(node_id="src", prompt="x", declared_outputs=(OutputPort("out", A),)))
+        p.map_over("each", source=src.ref("out"), item=Item("i"), body=body, expect_items=2)
+        one, two = p.add(_agent("one")), p.add(_agent("two"))
+        with pytest.raises(CompositionError, match="already has something named 'each'"):
+            p.parallel("each", (one, two))
 
     def test_structurally_identical_nodes_do_not_share_edges(self) -> None:
         """Nodes compare by identity, so equal-valued nodes route independently."""
@@ -213,7 +239,7 @@ class TestLoopBounds:
         p.connect(a, "out", b, "in")
         p.connect(b, "out", a, "in")
         with pytest.raises(CompositionError, match="loop_passes"):
-            p.require_loop_bound()
+            require_loop_bound(p)
 
     def test_a_declared_bound_satisfies_the_rule(self) -> None:
         """How the bound is spent is the backend's arithmetic, tested with it."""
@@ -222,8 +248,8 @@ class TestLoopBounds:
         p.set_entry(a)
         p.connect(a, "out", b, "in")
         p.connect(b, "out", a, "in")
-        p.require_loop_bound()
-        assert p.longest_cycle_length() == 2
+        require_loop_bound(p)
+        assert longest_cycle_length(p) == 2
 
     def test_only_the_closing_edge_counts_as_a_back_edge(self) -> None:
         """In a two-node loop the naive test flags both edges; only one closes it."""
@@ -232,8 +258,8 @@ class TestLoopBounds:
         p.set_entry(a)
         forward = p.connect(a, "out", b, "in")
         closing = p.connect(b, "out", a, "in")
-        assert p.back_edges() == [closing]
-        assert forward not in p.back_edges()
+        assert back_edges(p) == [closing]
+        assert forward not in back_edges(p)
 
 
 class TestEntryPoint:

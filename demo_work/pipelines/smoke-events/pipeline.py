@@ -5,7 +5,7 @@ called and no money is spent, while the run still produces `gate_presented`,
 `gate_resolved`, `route_taken`, `set_*` and `workflow_completed` — every event
 the subscriber needs to prove itself against.
 
-Deliberately not in `demo_work/`: this is a fixture for checking the engine
+The only pipeline committed to `demo_work/`: a fixture for checking the engine
 surface, not a pipeline anyone should run for its output.
 """
 

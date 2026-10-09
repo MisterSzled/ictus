@@ -1,21 +1,13 @@
 """Ask a database something, as a step in the graph. No model call.
 
-Nothing here knows Postgres, or SQLite, or any engine. A ``Datasource`` carries
-the program that runs one statement and this builds the step that runs it — so
-a second engine is a new module under ``ictus.sources`` and no change at all to
-the graph, the stdlib, or any pipeline already written.
+Nothing here knows any engine: a ``Datasource`` carries the program that runs
+one statement, and this builds the step that runs it.
 
-The read-only check is the reason this is its own step rather than a ``shell``
-with a command in it. ``Datasource.read_only`` is a claim the constructor makes
-and this refuses to build without, so a pipeline pointed at a writable
-connection fails while somebody is writing it, with a message, rather than at
-the moment generated SQL reaches a real table.
+Its own step rather than a ``shell``, because it refuses a source that does
+not promise ``read_only``.
 
-A failed query never fails the run. The step always succeeds; one that could
-not run says ``ran: "false"`` and puts why in ``why`` and on stderr. The step
-after it reads both and decides — which is the point of it being a node, and
-the difference between a query that could not run and a run that could not
-finish.
+A failed query never fails the run: the step always succeeds, says
+``ran: "false"``, and puts why in ``why`` and on stderr.
 """
 
 from __future__ import annotations
@@ -35,9 +27,7 @@ if TYPE_CHECKING:
 
 __all__ = ["COUNT_PORT", "RAN_PORT", "ROWS_PORT", "WHY_PORT", "query"]
 
-#: The result, as JSON text. A string rather than a list because what reads it
-#: is usually a prompt, and a model is handed the rows to look at rather than a
-#: structure to index.
+#: The result, as JSON text. A string, because what reads it is usually a prompt.
 ROWS_PORT = "rows"
 
 #: How many rows the statement actually returned, before any clipping.
@@ -49,10 +39,7 @@ RAN_PORT = "ran"
 #: Why it did not run, or what was clipped when it did.
 WHY_PORT = "why"
 
-#: Rows past this are dropped, and ``why`` says so. A database answers with as
-#: much as it is asked for, and the usual next step is a prompt with a context
-#: window; a step that silently filled one is harder to notice than a step that
-#: says it showed the first two hundred.
+#: Rows past this are dropped, and ``why`` says so.
 DEFAULT_LIMIT = 200
 
 
@@ -69,19 +56,14 @@ def query(
 ) -> ScriptNode:
     """Run ``sql`` against ``against``, and publish what came back.
 
-    ``sql`` is usually a reference to whatever wrote it — a model, an input, an
-    earlier step — so the statement is data flowing along an edge like anything
-    else, and is visible in the dashboard and in ``ictus trace`` as the text the
-    step was actually given.
+    ``sql`` is usually a reference to whatever wrote it, so the statement flows
+    along an edge and is visible in the dashboard and in ``ictus trace``.
 
-    ``environment`` picks which of a fleet source's environments to read, and
-    is usually a reference: a ticket says where a change is going. A source
-    holding one connection ignores it, and one holding several refuses a name
-    it was never built with.
+    ``environment`` picks which of a fleet source's environments to read. A
+    source holding one connection ignores it; one holding several refuses a
+    name it was not built with.
 
-    Refuses a source that does not promise ``read_only``. There is no flag to
-    override that: a step that may write is a different step, and spelling the
-    difference as an argument would mean the dangerous one is a typo away.
+    Refuses a source that does not promise ``read_only``, with no override.
     """
     if not against.read_only:
         raise CompositionError(
@@ -102,16 +84,13 @@ def query(
         args=(
             "-c",
             against.program,
-            # Through argv rather than baked into the program: these are
-            # rendered values, and interpolating one into source is how a quote
-            # in somebody's data becomes a syntax error at run time.
+            # Through argv, not interpolated into the program: a quote in
+            # somebody's data would otherwise be a syntax error.
             str(limit),
-            # The program gives up at `timeout`; the engine kills the step five
-            # seconds later. The gap is what keeps a slow query from being a
-            # failed step.
+            # The program gives up at `timeout`, the engine five seconds later,
+            # so a slow query is not a failed step.
             str(timeout),
-            # Which environment to read, when the source holds several. Empty
-            # for a source that holds one, which ignores it.
+            # Which environment to read. Empty for a source holding one.
             as_template(environment),
         ),
         uses=(against.name,),
@@ -123,9 +102,7 @@ def query(
             OutputPort(RAN_PORT, PortType.STRING, "'false' when it was refused or failed"),
             OutputPort(WHY_PORT, PortType.STRING, "Why it did not run, or what was clipped"),
         ),
-        # Not a contract the engine enforces. Its check runs before routes are
-        # evaluated and fails the run on stdout it cannot parse; the program
-        # always prints every field, and a reference that finds none falls back
-        # rather than raising.
+        # The engine's check runs before routes are evaluated and would fail
+        # the run on unparseable stdout. A missing reference falls back.
         enforce_outputs=False,
     )

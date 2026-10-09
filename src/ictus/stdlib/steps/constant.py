@@ -26,9 +26,12 @@ def constant(
     """Compute one value, with no provider call and no model cost.
 
     Pass ``output_type`` whenever the value is not free text. Without it
-    Conductor runs the rendered string through a YAML load, so ``"no"`` comes
-    back as ``False`` and ``"3"`` as an integer — a silent type change at the
-    point a route condition is about to test it.
+    Conductor runs the rendered string through a YAML load, so ``"3"`` comes
+    back an integer, ``"true"`` a bool and ``"null"`` a ``None`` — a silent type
+    change at the point a route condition is about to test it. The conductor
+    lint refuses the cases that actually retype; it reads the engine's own
+    loader, which is YAML 1.2, so ``"no"`` and ``"yes"`` are safe despite what
+    a YAML 1.1 habit suggests.
 
     The value is readable as ``node.ref("value")``. Conductor stores a single
     ``value:`` as the bare scalar, so that reference renders as ``node.output``

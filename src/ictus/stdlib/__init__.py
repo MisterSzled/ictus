@@ -1,24 +1,26 @@
-"""Ready-made nodes and stages for the shapes that recur in every pipeline.
+"""Ready-made nodes, stages and scopes for the shapes that recur in pipelines.
 
-Organised by what Conductor charges for them:
+Organised by what each thing is, in ``graph.NodeKind``'s vocabulary rather
+than any engine's:
 
-* ``gates``     — human decision points (``human_gate``)
-* ``agents``    — model calls (``agent``)
-* ``steps``     — zero-model steps (``set``, ``wait``, ``script``)
-* ``terminals`` — explicit, distinguishable exits (``terminate``)
-* ``stages``    — reusable sub-graphs (``workflow``)
+* ``gates``   — a run stops and waits for a person (``HUMAN_DECISION``, ``ASK``)
+* ``llm``     — a model is asked something (``LLM_CALL``)
+* ``steps``   — no model is called (``COMPUTATION``, ``SUBPROCESS``, ``DELAY``)
+* ``exits``   — the run ends, distinguishably (``EXIT``)
+* ``stages``  — a reusable sub-graph (``SUB_GRAPH``)
+* ``scopes``  — a sub-graph whose every ending is a value the caller routes on
 
-One primitive per module, so the docstring next to a thing is about that thing.
+One primitive per module. ``llm`` is not re-exported here: those exist for the
+stages, and reaching for one directly names ``ictus.stdlib.llm``.
 """
 
 from __future__ import annotations
 
-from ictus.stdlib.agents import briefing, remediate, validate_mcp, verdict, voice
+from ictus.stdlib.exits import fail, succeed
 from ictus.stdlib.gates import approval_gate, ask_human, ask_human_for, choice_gate
-from ictus.stdlib.stages import (
+from ictus.stdlib.scopes import (
     AGREED,
     ANSWERED,
-    APPROVE_OR_REJECT,
     CONVERGED,
     EXHAUSTED,
     FAILED,
@@ -28,19 +30,22 @@ from ictus.stdlib.stages import (
     READ,
     UNRESOLVED,
     Attempt,
-    ReviewOption,
-    ScriptStep,
     Speaker,
     Voice,
-    briefing_gate,
     converge,
     council,
     investigate,
     read_ticket,
-    resolve_unknowns,
     roundtable,
-    script_sequence,
     try_shell,
+)
+from ictus.stdlib.stages import (
+    APPROVE_OR_REJECT,
+    ReviewOption,
+    ScriptStep,
+    briefing_gate,
+    resolve_unknowns,
+    script_sequence,
     validate_mcps,
 )
 from ictus.stdlib.steps import (
@@ -55,7 +60,6 @@ from ictus.stdlib.steps import (
     shell,
     wait,
 )
-from ictus.stdlib.terminals import fail, succeed
 
 __all__ = [
     "AGREED",
@@ -79,7 +83,6 @@ __all__ = [
     "ask_human",
     "ask_human_for",
     "bindings",
-    "briefing",
     "briefing_gate",
     "choice_gate",
     "comment",
@@ -92,7 +95,6 @@ __all__ = [
     "investigate",
     "query",
     "read_ticket",
-    "remediate",
     "resolve_unknowns",
     "roundtable",
     "save_text",
@@ -100,9 +102,6 @@ __all__ = [
     "shell",
     "succeed",
     "try_shell",
-    "validate_mcp",
     "validate_mcps",
-    "verdict",
-    "voice",
     "wait",
 ]

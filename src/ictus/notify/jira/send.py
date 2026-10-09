@@ -1,16 +1,11 @@
 """Adding a comment to a Jira issue.
 
-The program is standard library only, like every program emitted here, and is
-handed the issue by the graph rather than configured with one: a run started by
-a ticket comments on that ticket.
+Standard library only, and handed the issue by the graph rather than
+configured with one.
 
-**The host is pinned to the configured site, and that is not a detail.** The
-issue usually arrives in a message somebody else wrote, so it is untrusted
-input, and the program authenticates with Basic auth — an email and an API
-token in a header. A target URL whose host were taken at face value would be an
-instruction to send that credential wherever the URL said. So the site is
-declared with the credential, and a URL naming anywhere else is refused before
-anything is sent.
+**The host is pinned to the configured site.** The issue usually arrives in a
+message somebody else wrote, and the program authenticates with Basic auth, so
+a URL naming anywhere else is refused before anything is sent.
 """
 
 from __future__ import annotations
@@ -82,10 +77,8 @@ HINTS = {
 
 
 def issue_of(target, site):
-    # The issue key in `target`, refusing a URL that names another host. The
-    # target usually comes from a message somebody else wrote; trusting its
-    # host would turn an issue link into an instruction about where to send a
-    # credential.
+    # The issue key in `target`, refusing a URL that names another host: the
+    # target usually comes from a message somebody else wrote.
     target = (target or "").strip().strip("<>")
     if "|" in target:  # a Slack link arrives as <url|label>
         target = target.split("|", 1)[0]
@@ -165,9 +158,8 @@ def main():
 
 
 def fail(issue, why):
-    # Never a non-zero exit. A comment that did not land is a fact for the next
-    # step, not a reason to end a run whose work succeeded; the reason goes to
-    # stderr, which the dashboard and `ictus trace` both show.
+    # Never a non-zero exit: a comment that did not land is a fact for the
+    # next step. The reason goes to stderr.
     print(why, file=sys.stderr)
     print(json.dumps({"issue": issue, "posted": "false", "why": why}))
 

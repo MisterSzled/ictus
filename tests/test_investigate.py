@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ictus import Datasource, EnvVar, Pipeline, PortType, ReasoningEffort
-from ictus.config import PipelineConfig
 from ictus.errors import CompositionError
 from ictus.graph.node import AgentNode, ScriptNode
 from ictus.interfaces.conductor import conductor
 from ictus.lint import lint_pipeline
-from ictus.sources import readonly_sqlite
+from ictus.runspec.config import PipelineConfig
+from ictus.sources.sqlite import readonly_sqlite
 from ictus.stdlib import ANSWERED, investigate, succeed
-from ictus.stdlib.stages.investigate import EXHAUSTED
+from ictus.stdlib.scopes.investigate import EXHAUSTED
 
 if TYPE_CHECKING:
     from ictus.graph.scope import Scope

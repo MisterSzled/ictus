@@ -30,31 +30,23 @@ def shell(
 ) -> ScriptNode:
     """Run a command, with no model in the loop.
 
-    Three things bite here:
+    Three things bite:
 
-    * A relative ``command`` resolves against ``working_dir``, which defaults to
-      **the process's current directory** — not the repo root, and not the
-      directory the workflow file lives in. Set ``working_dir`` when you want
-      that to be predictable; otherwise the command is only correct relative to
-      wherever the run happens to be launched from.
-    * ``args`` goes on the command line and hits the OS length cap. Pass large
+    * A relative ``command`` resolves against ``working_dir``, which defaults
+      to the process's current directory — not the repo root, and not where
+      the workflow file lives.
+    * ``args`` goes on the command line and hits the OS length cap; pass large
       payloads through ``stdin``.
-
-    * Declaring ``outputs`` makes stdout a **contract, not a log**: the command
-      must print a JSON object, and Conductor raises "declares an output schema
-      but stdout is not valid JSON" if it does not — after the command has
-      already run and done whatever it does. Leave ``outputs`` empty for a
-      command that prints prose, and send progress to stderr.
+    * Declaring ``outputs`` makes stdout a contract: the command must print a
+      JSON object or Conductor raises, after it has already run. Leave
+      ``outputs`` empty for a command that prints prose.
 
     A stdout object is merged over ``{stdout, stderr, exit_code}``, so declared
     ``outputs`` can name its fields directly.
 
-    ``enforce_outputs=False`` keeps the ports and drops the contract: references
-    are still typed at composition, and the baseline three are still readable by
-    a route, but stdout is no longer parsed or checked. That is the only way to
-    route on a command that failed — the contract's raise lands before routes
-    are evaluated, so with it on a dying command ends the run rather than taking
-    a branch. ``stdlib.try_shell`` is that shape, already wired.
+    ``enforce_outputs=False`` keeps the ports and drops the contract, which is
+    the only way to route on a command that failed: the raise lands before
+    routes are evaluated. ``stdlib.try_shell`` is that shape, already wired.
     """
     return ScriptNode(
         node_id=node_id,

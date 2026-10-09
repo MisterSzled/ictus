@@ -1,14 +1,10 @@
 """Check a Jira credential the same way a run would, before wiring it in.
 
-Runs the exact program `ictus.sources.readonly_jira` compiles into a workflow,
-against the variables already in the environment — so a pass here means a run
-will work, and a failure says which of the three is wrong rather than leaving
-it to be discovered in a Slack thread.
+Runs the exact program `ictus.sources.readonly_jira` compiles, against the
+variables already in the environment.
 
-It also checks the shape of the permission: a token that can *write* is a token
-this pipeline should not be holding, so the second half tries one write and
-expects to be refused. Nothing is created either way — the attempt targets an
-issue key that cannot exist.
+The second half tries one write and expects to be refused. Nothing is created
+either way: the attempt targets an issue key that cannot exist.
 
     python3 smoke/check_jira.py DB-8790
 
@@ -26,7 +22,7 @@ import urllib.error
 import urllib.request
 
 from ictus.graph.requirements import EnvVar
-from ictus.sources import readonly_jira
+from ictus.sources.jira import readonly_jira
 
 NEEDED = ("JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_SITE")
 
@@ -52,10 +48,8 @@ def _read(issue: str) -> dict[str, str]:
 def _authorization() -> tuple[str, str]:
     """Where this credential has power, and the header that proves it.
 
-    A scoped token is refused at the site and accepted at Atlassian's gateway;
-    a classic one is the other way round. Testing the wrong one reports a
-    reassuring refusal that means nothing, so resolve it the way the compiled
-    program does before asking what the token may do.
+    A scoped token is refused at the site and accepted at the gateway; a
+    classic one is the other way round, so resolve it before asking anything.
     """
     site = os.environ["JIRA_SITE"].rstrip("/")
     token = os.environ["JIRA_API_TOKEN"]
@@ -83,9 +77,8 @@ def _authorization() -> tuple[str, str]:
 def _may_write(base: str, header: str) -> str | None:
     """Whether the credential can comment. ``None`` when it is refused.
 
-    Aimed at an issue key no project uses, so a token that *can* write still
-    writes nothing: the answer arrives as 404 (allowed, no such issue) or 403
-    (not allowed at all), and those are different facts.
+    Aimed at an issue key no project uses, so a token that can write still
+    writes nothing: 404 means allowed, 403 means not.
     """
     body = {"body": {"type": "doc", "version": 1, "content": []}}
     request = urllib.request.Request(

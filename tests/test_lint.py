@@ -1,8 +1,7 @@
 """Generic composition lints — one negative test per rule.
 
-These hold for any graph, whatever runs it, so none of them passes a backend.
-Rules that are true because of how one engine runs are tested next to that
-engine, in ``test_conductor_lints.py``.
+These hold for any graph, so none passes a backend. Engine-specific rules are
+in ``test_conductor_lints.py``.
 """
 
 from __future__ import annotations
@@ -102,10 +101,9 @@ class TestStageContract:
     def test_contract_drift_after_instantiation_is_reported(self) -> None:
         """The reachable version of the gap Conductor leaves open.
 
-        ``instantiate`` copies the child's contract onto the node, so a mismatch
-        cannot be written directly. It can still drift: declaring a new required
-        input on the body afterwards leaves the placement stale, and Conductor
-        compares the two sides never.
+        ``instantiate`` copies the child's contract onto the node, so a
+        mismatch cannot be written directly — but declaring a new required
+        input on the body afterwards leaves the placement stale.
         """
         stage = self._stage()
         parent = Pipeline(pipeline_id="outer")

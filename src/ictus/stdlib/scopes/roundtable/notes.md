@@ -1,0 +1,1 @@
+These were formed independently — nobody had heard anybody. Where the conversation has drifted away from one of them, that is worth a sentence: either somebody made an argument that moved it, and you can say whose, or it drifted because the first person to speak framed it and nobody went back. The second happens quietly and is worth catching.

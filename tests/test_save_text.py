@@ -1,13 +1,8 @@
-"""Writing a step's output to a file.
+"""Writing a step's output to a file, built out of a `script` step.
 
-Conductor has no declarative file write — an agent's output lives in the run's
-context and is printed as JSON at the end. So a pipeline whose point is to
-produce a document had nowhere to put it, and this is that, built out of the
-`script` step the engine does have.
-
-The tests that matter here are about the two ways it could be quietly wrong: a
-model's output reaching a shell as source, and a declared output schema that the
-engine rejects only after the file has been written.
+Two ways it could be quietly wrong: a model's output reaching a shell as
+source, and a declared output schema the engine rejects only after the file
+has been written.
 """
 
 from __future__ import annotations

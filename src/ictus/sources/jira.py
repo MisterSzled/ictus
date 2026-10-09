@@ -1,30 +1,19 @@
 """Reading a Jira issue, and nothing else.
 
-A source rather than an integration, because this is the direction data comes
-*from*: the thing it answers with is a ticket, and what asks is a step that
-wanted to read one. ``ictus.notify.jira`` is the other direction — leaving a
-remark — and the two hold separate credentials on purpose, so a pipeline that
-only needs to read can be given an account that only reads.
+A source, not an integration: this is the direction data comes from.
+``ictus.notify.jira`` is the other direction, and holds its own credential.
 
-``read_only`` here is a claim about the program, not about the account. The
-program issues one ``GET`` and has no path that writes, so a step built on it
-cannot comment, transition or edit however it is driven. What stops a *stolen*
-token doing those things is the token's own permissions, which is why the setup
-hint asks for an account with read scope and nothing more.
+``read_only`` is a claim about the program, which issues one ``GET`` and has
+no path that writes. What stops a stolen token writing is the token's scope.
 
-Two credentials exist and they are not interchangeable. A *classic* API token
-authenticates as ``Basic email:token`` against the site itself. A *scoped* one
-— the kind worth asking for, because its permissions can be narrowed to reading
-— is refused there, and goes to Atlassian's gateway instead: ``Bearer token``
-against ``api.atlassian.com/ex/jira/<cloud id>``. The program tries the gateway
-first and falls back, so whoever issues the credential does not have to tell
-anybody which kind it is.
+Two credential kinds: a classic API token is ``Basic email:token`` against the
+site, a scoped one is ``Bearer token`` against
+``api.atlassian.com/ex/jira/<cloud id>``. The program tries the gateway first
+and falls back.
 
-The host is pinned to the configured site either way, for the same reason as
-the commenting program: the issue usually arrives in a message somebody else
-wrote, so a URL whose host were taken at face value would be an instruction
-about where to send a credential. The cloud id is read from the configured
-site and nowhere else, so the gateway path is pinned by the same declaration.
+The host is pinned to the configured site either way, since the issue usually
+arrives in a message somebody else wrote. The cloud id comes from that same
+site.
 """
 
 from __future__ import annotations
@@ -58,9 +47,8 @@ def readonly_jira(
 ) -> Datasource:
     """A Jira Cloud site whose issues can be read and not changed.
 
-    Named apart from the commenting integration by default, so a pipeline that
-    declares both says so twice and a reader sees two credentials rather than
-    assuming one account does everything.
+    Named apart from the commenting integration, so a pipeline declaring both
+    shows two credentials.
     """
     return Datasource(
         name=name,
@@ -88,9 +76,7 @@ KEY = re.compile(r"([A-Za-z][A-Za-z0-9_]+-[0-9]+)")
 GATEWAY = "https://api.atlassian.com"
 WANTED = ("summary,description,status,issuetype,priority,labels,components,"
           "reporter,assignee,attachment")
-# Text attachments come back inline; the data a ticket is *about* is often
-# the CSV somebody dragged onto it, and a step that cannot see it stops one
-# question short of the answer. Anything else is named and left alone.
+# Text attachments come back inline; anything else is named and left alone.
 READABLE = ("text/", "application/json", "application/csv")
 INLINE_LIMIT = 100000
 HINTS = {
@@ -102,9 +88,8 @@ HINTS = {
 
 
 def issue_of(target, site):
-    # The issue key in `target`, refusing a URL that names another host. The
-    # target usually comes from a message somebody else wrote; trusting its
-    # host would turn a link into an instruction about where to send a token.
+    # The issue key in `target`, refusing a URL that names another host: the
+    # target usually comes from a message somebody else wrote.
     target = (target or "").strip().strip("<>")
     if "|" in target:  # a Slack link arrives as <url|label>
         target = target.split("|", 1)[0]
@@ -123,8 +108,7 @@ def issue_of(target, site):
 
 
 def flatten(node):
-    # Atlassian document format to plain text. A description arrives as a tree
-    # of paragraphs and code blocks, and a step reading it wants prose.
+    # Atlassian document format to plain text.
     if isinstance(node, str):
         return node
     if isinstance(node, list):
@@ -167,14 +151,12 @@ def ask(url, header, seconds):
 
 def authorize(site, issue, seconds):
     # A scoped token is refused at the site and accepted at the gateway; a
-    # classic one is the other way round. Try the gateway first, because a
-    # scoped credential is the one worth asking for. Returns the base and the
-    # header that worked, so whatever hangs off the issue uses the same.
+    # classic one is the other way round. Returns the base and header that
+    # worked, so attachments use the same.
     where = "/rest/api/3/issue/" + urllib.parse.quote(issue) + "?fields=" + WANTED
     code, tenant = ask(site + "/_edge/tenant_info", None, seconds)
     if code == 200 and isinstance(tenant, dict) and tenant.get("cloudId"):
-        # The cloud id came from the configured site, so this is still pinned
-        # by the same declaration the URL check uses.
+        # The cloud id came from the configured site, so this is still pinned.
         base = GATEWAY + "/ex/jira/" + str(tenant["cloudId"])
         header = "Bearer " + os.environ[TOKEN_NAME]
         code, body = ask(base + where, header, seconds)
@@ -262,9 +244,8 @@ def main():
 
 
 def fail(why):
-    # Never a non-zero exit. A ticket that could not be read is a fact for the
-    # next step, not a reason to end a run; the reason goes to stderr, which the
-    # dashboard and `ictus trace` both show.
+    # Never a non-zero exit: a ticket that could not be read is a fact for the
+    # next step. The reason goes to stderr.
     print(why, file=sys.stderr)
     print(json.dumps({"found": "", "got": "false", "why": why}))
 

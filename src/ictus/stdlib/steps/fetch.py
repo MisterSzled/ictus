@@ -1,22 +1,15 @@
 """Ask a source for one named thing, as a step in the graph. No model call.
 
-The sibling of ``query``, and separate from it because the two ask differently.
-A query sends a statement and gets rows; this sends an *identifier* — a ticket
-key, a link somebody pasted — and gets the one thing it names. Folding them
-together would mean a parameter called ``sql`` holding a URL.
+The sibling of ``query``: a query sends a statement and gets rows, this sends
+an identifier and gets the one thing it names.
 
-Nothing here knows Jira, or any other service. A ``Datasource`` carries the
-program that does the reading and this builds the step that runs it, so a
-second place to read from is a new module under ``ictus.sources`` and no change
-at all to the graph, the stdlib, or any pipeline already written.
+Nothing here knows any service; a ``Datasource`` carries the program that does
+the reading.
 
-Refuses a source that does not promise ``read_only``, for the same reason
-``query`` does: a step that may change what it touched is a different step, and
-spelling the difference as an argument makes the dangerous one a typo away.
+Refuses a source that does not promise ``read_only``, with no override.
 
-A read that fails never fails the run. The step always succeeds; one that could
-not read says ``got: "false"`` and puts why in ``why`` and on stderr. What reads
-it next decides — which is the point of it being a node.
+A read that fails never fails the run: the step says ``got: "false"`` and puts
+why in ``why`` and on stderr.
 """
 
 from __future__ import annotations
@@ -36,9 +29,7 @@ if TYPE_CHECKING:
 
 __all__ = ["FOUND_PORT", "GOT_PORT", "WHY_PORT", "fetch"]
 
-#: What came back, as JSON text. A string rather than an object because what
-#: reads it is usually a prompt, and a model is handed the thing to look at
-#: rather than a structure to index.
+#: What came back, as JSON text. A string, because what reads it is a prompt.
 FOUND_PORT = "found"
 
 #: "true" when it was read, "false" when it could not be.
@@ -59,10 +50,8 @@ def fetch(
 ) -> ScriptNode:
     """Read whatever ``what`` names, out of ``against``.
 
-    ``what`` is usually a reference: the link in the message that started the
-    run. Whether that is a bare identifier or the URL it arrived in is the
-    source's business — and so is refusing a URL pointing somewhere the
-    credential was not meant to go.
+    ``what`` is usually a reference. A bare identifier or a URL; resolving and
+    vetting one is the source's business.
     """
     if not against.read_only:
         raise CompositionError(
@@ -80,13 +69,11 @@ def fetch(
         args=(
             "-c",
             against.program,
-            # Through argv rather than baked into the program: this is a
-            # rendered value, and interpolating one into source is how a quote
-            # in somebody's data becomes a syntax error at run time.
+            # Through argv, not interpolated into the program: a quote in
+            # somebody's data would otherwise be a syntax error.
             as_template(what),
-            # The program gives up at `timeout`; the engine kills the step five
-            # seconds later. The gap is what keeps a slow answer from being a
-            # failed step.
+            # The program gives up at `timeout`, the engine five seconds later,
+            # so a slow answer is not a failed step.
             str(timeout),
         ),
         timeout=timeout + 5,

@@ -27,13 +27,10 @@ def ask_human(
 ) -> QuestionsNode:
     """Ask a fixed set of questions. Emits ``type: questions``.
 
-    Distinct from a gate: a gate offers a decision among known options, this
-    collects *values* — a path, a ticket id, a name. All of them cost one
-    iteration together, not one each.
+    A gate offers a decision; this collects values. All of them cost one
+    iteration together.
 
-    Give every question an ``id``. It is the key its answer lands under, and
-    naming them means inserting a question later does not renumber the answers
-    that downstream nodes already reference.
+    Give every question an ``id``: it is the key its answer lands under.
     """
     return QuestionsNode(
         node_id=node_id,
@@ -55,13 +52,9 @@ def ask_human_for(
 ) -> QuestionsNode:
     """Ask questions an earlier node produced. Emits ``type: questions``.
 
-    For everything that cannot be written down in advance. A ticket touching an
-    unknown number of repositories has an unknown number of questions, so the
-    node that works out *what* is missing is the one that writes them.
-
-    ``source`` points at an array of strings or of question objects. Because the
-    ids are only known at run time, the answers are read through
-    ``ref("answers")`` rather than one port per question.
+    For questions that cannot be written down in advance. ``source`` points at
+    an array of strings or question objects; since the ids are only known at
+    run time, answers are read through ``ref("answers")``.
     """
     return QuestionsNode(
         node_id=node_id,

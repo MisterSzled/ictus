@@ -1,8 +1,7 @@
 """Asking a person for values the run could not work out.
 
-Distinct from a gate: a gate offers a decision among known options; this
-collects values. Conductor fixes the output shape and forbids most other fields,
-so the node type carries only what is legal on it.
+A gate offers a decision; this collects values. Conductor fixes the output
+shape, so the node type carries only what is legal on it.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from ictus import (
     QuestionsNode,
     tpl,
 )
+from ictus.graph.traversal import reachable_from_entry
 from ictus.interfaces.conductor import ConductorBackend, conductor
 from ictus.lint import lint_pipeline
 from ictus.stdlib import ask_human, resolve_unknowns, succeed
@@ -157,7 +157,7 @@ class TestEmission:
     def test_the_abort_target_is_reachable(self) -> None:
         """Without the abort edge in the graph it would look orphaned."""
         p = self._pipeline()
-        assert "gone" in p.reachable_from_entry()
+        assert "gone" in reachable_from_entry(p)
         assert lint_pipeline(p, backend=conductor) == []
 
     def test_it_loads(self, validates: Callable[[Pipeline], None]) -> None:

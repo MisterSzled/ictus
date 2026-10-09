@@ -1,8 +1,7 @@
 """Generic composition rules — true of any graph, whatever executes it.
 
-Rules that depend on one engine's runtime live with that engine, in
-``ictus.interfaces.<engine>.lints``. Keeping them apart is what stops "Conductor
-raises here" from quietly becoming "graphs are like this".
+Rules that depend on one engine's runtime live in
+``ictus.interfaces.<engine>.lints``.
 """
 
 from __future__ import annotations
@@ -10,23 +9,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ictus.errors import CompositionError
+from ictus.graph.composition import ABORT_CASE
 from ictus.graph.node import GateNode, NodeKind, ScopeNode, SubGraphNode
 from ictus.graph.ref import Origin
+from ictus.graph.traversal import has_cycle
 
 if TYPE_CHECKING:
+    from ictus.graph.composition import RouteEnd
     from ictus.graph.mapping import MapGroup
     from ictus.graph.node import Node
-    from ictus.graph.pipeline import Pipeline, RouteEnd
+    from ictus.graph.pipeline import Pipeline
     from ictus.graph.ref import Ref
     from ictus.interfaces import Capabilities
 
-# Conductor carries an abandoned question set on `abort_route`, not in `routes:`.
-ABORT_CASE = "__abort__"
-
-# What to call a node in a violation. `NodeKind`'s own values name the work for a
-# backend to map onto its vocabulary; a person reading a lint wants the word they
-# typed. Every rule here used to say "agent", so a script's unwired input, a
-# dead-ended gate and a stage's drifted contract all reported as agent problems.
+# What to call a node in a violation: the word the author typed, rather than
+# `NodeKind`'s engine-facing value.
 _KIND_NAMES = {
     NodeKind.LLM_CALL: "agent",
     NodeKind.HUMAN_DECISION: "gate",
@@ -43,7 +40,7 @@ def describe(node: Node) -> str:
     """How a violation names one node: what it is, then which one."""
     if isinstance(node, ScopeNode):
         # A scope is a stage with a closed outcome vocabulary, and the rules
-        # treat the two differently — so the message has to as well.
+        # treat the two differently.
         return f"scope {node.node_id!r}"
     return f"{_KIND_NAMES.get(node.kind, node.kind.value)} {node.node_id!r}"
 
@@ -51,13 +48,12 @@ def describe(node: Node) -> str:
 PLACEHOLDER = "CHANGE-ME"
 """What `ictus init` writes where a decision has to be made.
 
-A graph still carrying it has not been authored yet, and `ictus run` on one is a
-billable call against a placeholder. Caught as a lint rather than at the
-scaffold, because the folder is meant to be unfinished right after `init` — it
-is running it that is the mistake.
+A lint rather than a scaffold check: a folder is meant to be unfinished right
+after `init`.
 """
 
 __all__ = [
+    "capability_problems",
     "describe",
     "group_routing_problems",
     "node_problems",
@@ -65,16 +61,14 @@ __all__ = [
     "previous_pass_problems",
     "reference_problems",
     "stage_contract_problems",
+    "undeclared_use_problems",
 ]
 
 
 def reference_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
     """Resolve every typed reference against the finished graph.
 
-    A reference built with ``ref_to`` names a node that did not exist yet, so
-    this is where it gets checked: the node must exist, declare that port, and
-    declare it with the type the reference claims. Structural, unlike the
-    regular expression this replaced.
+    The node must exist, declare that port, and declare it with the claimed type.
     """
     by_id = {n.node_id: n for n in pipeline.nodes}
     declared_inputs = {p.name: p for p in pipeline.workflow_inputs}
@@ -87,8 +81,7 @@ def reference_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
     maps = {m.group_id: m for m in pipeline.maps}
     for ref in refs:
         if ref.origin is Origin.LOOP_ITEM:
-            # The item's fields were checked by `Item.ref` when the reference
-            # was written; the graph has nothing further to say about them.
+            # `Item.ref` checked the fields where the reference was written.
             continue
         if ref.source_id in maps:
             problems.extend(_map_reference_problems(maps[ref.source_id], node, ref, where))
@@ -146,13 +139,7 @@ def _map_reference_problems(group: MapGroup, node: Node, ref: Ref, where: str) -
 
 
 def group_routing_problems(pipeline: Pipeline, group: RouteEnd, where: str) -> list[str]:
-    """A group routes like a step, so it can dead-end like one.
-
-    Only nodes were ever linted, and a group is not a node — so a parallel or map
-    group with nothing but conditional routes passed every check and then hit
-    ``ValueError: No matching route found`` (engine/router.py:109) at run time,
-    after every member had already been paid for.
-    """
+    """A group routes like a step, so it can dead-end like one."""
     edges = pipeline.outgoing(group)
     if not edges:
         return [
@@ -191,22 +178,12 @@ def undeclared_use_problems(
 ) -> list[str]:
     """A step reaching something the pipeline never said it reaches.
 
-    The rule the whole design rests on: what a run touches outside the machine
-    is announced at the top, where a reader sees it before they read what it
-    does and whoever approves the run is shown the same list. A step built from
-    an ``Integration`` or a ``Datasource`` carries its program as opaque argv,
-    so without this a pipeline can post as somebody, or open a production
-    database, while preflight reports no requirements and passes.
+    What a run touches outside the machine is announced at the top, where
+    preflight and the start gate can see it. Checked by name, which is all a
+    node is allowed to remember.
 
-    Checked by name, which is what a node is allowed to remember. Names are
-    unique per kind and per pipeline, so a name that resolves is the thing the
-    step was built from.
-
-    ``inherited`` is what the pipelines above this one declare. A stage is part
-    of its caller's run and reports onto its caller's conversation, so an
-    integration declared once at the top is declared for the steps attached
-    inside a stage as well — which is exactly where ``apply_integrations`` puts
-    them.
+    ``inherited`` is what the pipelines above this one declare: a stage is part
+    of its caller's run.
     """
     declared = set(inherited)
     declared |= {service.name for service in pipeline.integrations}
@@ -224,13 +201,9 @@ def undeclared_use_problems(
 def previous_pass_problems(pipeline: Pipeline, where: str) -> list[str]:
     """A read of the last pass, on a graph that never takes a second one.
 
-    ``feed(..., previous_pass=True)`` is how a member of a parallel group reads a
-    sibling: the engine keys the group's result by the group's name and
-    overwrites it only when the group next finishes, so a second pass sees the
-    first. With no loop there is no first — the reference renders empty, every
-    round, and a council wired this way would look like it was deliberating.
+    With no loop there is no previous pass, so the reference renders empty.
     """
-    if pipeline.has_cycle():
+    if has_cycle(pipeline):
         return []
     return [
         f"{where}: {dep.target.node_id!r} reads {dep.source.node_id!r} with "
@@ -246,17 +219,13 @@ def node_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
     """Problems with one node's place in the graph."""
     problems: list[str] = []
     edges = pipeline.outgoing(node)
-    # A map body is not a step of the graph: it is reached by the group that
-    # spawns it, has no routes of its own, and is never emitted in `agents:`.
-    # Every rule about edges is therefore silent about it.
+    # A map body has no routes of its own, so no edge rule applies to it.
     if pipeline.map_of(node) is not None:
         return reference_problems(pipeline, node, where)
     in_group = pipeline.group_of(node) is not None
 
-    # A scope is the one node whose conditional routes are provably exhaustive:
-    # its outcome vocabulary is closed, `branch_on_outcome` refuses to leave a
-    # member unrouted, and outcome names that a JSON parse would turn into
-    # non-strings are rejected at composition. Nothing else can reach the port.
+    # A scope is the one node whose conditional routes are provably
+    # exhaustive: its outcome vocabulary is closed and fully routed.
     exhaustive = isinstance(node, ScopeNode) and {e.case for e in edges} >= set(node.outcomes)
     routed = [e for e in edges if e.case != ABORT_CASE]
     if (
@@ -272,8 +241,7 @@ def node_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
             "it is not the fallback the answered path needs."
         )
     elif not edges and node.accepts_routes and not in_group:
-        # A member of a parallel group routes as part of the group and correctly
-        # has no edge of its own; Conductor rejects one that does.
+        # A group member routes as part of its group and has no edge of its own.
         problems.append(
             f"{where}: {describe(node)} has no outgoing route, so it implicitly ends the "
             "run — indistinguishable from a forgotten edge. Use a TerminateNode or route to END."
@@ -293,12 +261,7 @@ def node_problems(pipeline: Pipeline, node: Node, where: str) -> list[str]:
 
 
 def stage_contract_problems(where: str, host: SubGraphNode, child: Pipeline) -> list[str]:
-    """Cross-check a stage's boundary against the workflow it hosts.
-
-    No engine seen so far compares these two sides, and the drift is silent:
-    declaring a new required input on a stage body leaves every existing
-    placement of it stale.
-    """
+    """Cross-check a stage's boundary against the workflow it hosts."""
     problems: list[str] = []
     declared = {p.name: p for p in child.declared_input_ports}
     supplied = {p.name: p for p in host.inputs}
@@ -334,12 +297,7 @@ def stage_contract_problems(where: str, host: SubGraphNode, child: Pipeline) -> 
 
 
 def capability_problems(pipeline: Pipeline, can: Capabilities, where: str) -> list[str]:
-    """What this pipeline asks for that the chosen backend cannot supply.
-
-    Generic because the question is: the backend declares what it can do, and
-    this compares the graph against that declaration. A backend that grows a new
-    capability says so in one place and every pipeline is rechecked against it.
-    """
+    """What this pipeline asks for that the chosen backend cannot supply."""
     unreportable = sorted(signal.value for signal in pipeline.subscribed_signals() - can.signals)
     if not unreportable:
         return []

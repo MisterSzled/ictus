@@ -1,21 +1,16 @@
 """Write a value another step produced to a file.
 
-Conductor has no way to write a file declaratively — an agent's output lives in
-the run's context and is printed as JSON at the end, and that is all. So a
-pipeline whose point is to produce a document had nowhere to put it.
+Conductor has no declarative file write, so this is a ``script`` step. Two
+details:
 
-This is a ``script`` step, which is the mechanism the engine does have. Two
-details make it safe rather than merely working:
+* **The text goes in on stdin, never into the command line**, and the path
+  travels as an argv element. Interpolating either into a ``sh -c`` string
+  would make a model's output executable.
+* **Parent directories are created**, so a missing ``reports/`` does not lose
+  the file.
 
-* **The text goes in on stdin, never into the command line.** A report
-  containing backticks, ``$(...)``, quotes or newlines is a payload, not shell
-  source, and interpolating it into a ``sh -c`` string would make a model's
-  output executable. The path travels as an argv element for the same reason.
-* **Parent directories are created.** Otherwise the last step of a council that
-  cost real money fails on a missing ``reports/`` and the report is gone.
-
-The file lands relative to the run's working directory — the project you
-launched against — because a script step's ``working_dir`` is the process cwd.
+The file lands relative to the run's working directory, since a script step's
+``working_dir`` is the process cwd.
 """
 
 from __future__ import annotations
@@ -34,14 +29,11 @@ if TYPE_CHECKING:
 
 __all__ = ["save_text"]
 
-# `$1` is the path, passed as an argument rather than spliced into the script.
-# `sh` is $0 so the path lands in $1 where the script expects it.
+# `$1` is the path, passed as an argument; `sh` is $0 so it lands there.
 #
-# stdout is a JSON object because a script that declares `output:` must print
-# one — Conductor parses it and raises "declares an output schema but stdout is
-# not valid JSON" otherwise, *after* the file has already been written. The path
-# is escaped through sed rather than interpolated, so one containing a quote
-# still produces valid JSON.
+# stdout is a JSON object because a script declaring `output:` must print one,
+# and the engine raises otherwise — after the file has been written. The path
+# is escaped through sed so one containing a quote still produces valid JSON.
 _ESCAPED = r"""$(printf %s "$1" | sed 's/\\/\\\\/g;s/"/\\"/g')"""
 _REPORT = f'printf \'{{"path":"%s"}}\' "{_ESCAPED}"'
 _WRITE = f'mkdir -p "$(dirname "$1")" && cat > "$1" && {_REPORT}'
@@ -60,16 +52,11 @@ def save_text(
 ) -> ScriptNode:
     """Write ``text`` to the file at ``to``.
 
-    ``to`` may be a template, so a path can carry a value from the run — one
-    file per item in a fan-out, or a name taken from the ticket being worked on.
-
-    Costs one iteration and no provider call. The written path comes back as
-    ``path``, so a terminal can tell the person where to look rather than
-    leaving them to guess.
+    ``to`` may be a template, so a path can carry a value from the run. Costs
+    one iteration and no provider call; the written path comes back as ``path``.
 
     Wire ``text``'s source with ``feed`` or ``connect`` and declare it in
-    ``inputs``: under ``context.mode: explicit`` a value this step does not
-    declare is not in scope, and the file would be written empty.
+    ``inputs``, or under ``context.mode: explicit`` the file is written empty.
     """
     if isinstance(to, str) and not to.strip():
         raise CompositionError(f"save_text {node_id!r} needs somewhere to write")

@@ -1,19 +1,15 @@
 """One source over several environments of the same shape.
 
-A change lands in *an* environment — atlantis, babylon, original — and which
-one is in the ticket, so it is data rather than a declaration. But the set is
-not: the pipeline names every environment it may reach, each with its own
-connection string, and preflight checks all of them before anything runs.
+Which environment a change lands in is data; the set of them is not. The
+pipeline names every one it may reach, each with its own connection string,
+and preflight checks all of them.
 
-The map is baked into the program at composition, and that is the part worth
-being careful about. The environment name arrives in text somebody else wrote,
-so the lookup is a table of declared names, never ``f"{name}_DSN"`` — a ticket
-asking for an environment nobody declared is refused with the list of the ones
-that exist, not quietly resolved against whatever happened to be exported.
+The map is baked into the program at composition. The name arrives in text
+somebody else wrote, so the lookup is a table of declared names, never
+``f"{name}_DSN"``.
 
-Read-only is unchanged by having several. Each connection is its own read-only
-user, each session is opened read-only, each statement is checked. More
-environments is more credentials, not more capability.
+Read-only is unchanged by having several: more environments is more
+credentials, not more capability.
 """
 
 from __future__ import annotations
@@ -88,9 +84,8 @@ PSQL = ${psql}
 ${guard}
 
 def dsn_for(asked):
-    # A table of declared names, never a pattern. The name arrives in text
-    # somebody else wrote, so an environment nobody declared has to be refused
-    # rather than resolved against whatever happened to be exported.
+    # A table of declared names, never a pattern: the name arrives in text
+    # somebody else wrote.
     wanted = (asked or "").strip().lower()
     known = ", ".join(sorted(WHERES))
     if not wanted:
@@ -116,8 +111,7 @@ def main():
     if why:
         return fail("refused: " + why)
     env = dict(os.environ)
-    # The server's own refusal, in front of the guard's. A statement that gets
-    # past the text check still cannot write through this session.
+    # The server's own refusal, in front of the guard's.
     env["PGOPTIONS"] = (
         "-c default_transaction_read_only=on -c statement_timeout=" + str(seconds * 1000)
     )
@@ -161,8 +155,8 @@ def report(rows, total, where, truncated):
 
 
 def fail(why):
-    # Never a non-zero exit. A query that could not run is a fact for the next
-    # step to read, not a reason to end a run whose work so far succeeded.
+    # Never a non-zero exit: a query that could not run is a fact for the next
+    # step, not a reason to end the run.
     print(why, file=sys.stderr)
     print(json.dumps({"rows": "[]", "count": "0", "ran": "false", "why": why}))
 

@@ -13,7 +13,9 @@ import pytest
 from ictus import Datasource, EnvVar, InputPort, Pipeline, PortType, tpl
 from ictus.errors import CompositionError
 from ictus.lint import lint_pipeline
-from ictus.sources import readonly_postgres, readonly_postgres_fleet, readonly_sqlite
+from ictus.sources.fleet import readonly_postgres_fleet
+from ictus.sources.postgres import readonly_postgres
+from ictus.sources.sqlite import readonly_sqlite
 from ictus.stdlib import query, succeed
 
 if TYPE_CHECKING:

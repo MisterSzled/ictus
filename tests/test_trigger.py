@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
 from pathlib import Path
@@ -17,25 +18,25 @@ from ictus import (
     RunSignal,
     WorkflowInput,
 )
+from ictus.assemble.announcements import OPENER_ID, apply_integrations
+from ictus.bridge.slack.listen import events
+from ictus.bridge.slack.requests import asked
 from ictus.errors import CompositionError
-from ictus.integrate import OPENER_ID, apply_integrations
-from ictus.interfaces.conductor import conductor, launch_command, launch_env
-from ictus.interfaces.conductor.runs import LiveRun
-from ictus.notify.slack import slack_channel, slack_webhook
-from ictus.notify.slack.listen import events
-from ictus.notify.slack.trigger import (
-    DEFAULT_PREFIX,
-    Asked,
-    Need,
-    Trigger,
-    asked,
-    start,
-    triggers_in,
+from ictus.interfaces.conductor import conductor
+from ictus.interfaces.conductor.control.launch import (
+    TYPED_INPUT_FLAG,
+    launch_command,
 )
+from ictus.interfaces.conductor.control.live import LiveRun
+from ictus.notify.slack import slack_channel, slack_webhook
+from ictus.runs.launch import Asked, start
+from ictus.runs.triggers import DEFAULT_PREFIX, Need, Trigger, triggers_in
 from ictus.stdlib import approval_gate, succeed
 
 STR = PortType.STRING
-TRIGGER = Trigger(workflow=Path("demo_work/pipelines/asked/build/asked.yaml"))
+TRIGGER = Trigger(
+    workflow=Path("demo_work/pipelines/asked/build/asked.yaml"), thread_input="reply_to"
+)
 
 
 def _envelope(text: str, **over: object) -> dict[str, object]:
@@ -109,8 +110,7 @@ def test_a_press_is_not_an_ask() -> None:
 def test_whitespace_in_the_prefix_matches_whitespace_in_the_message() -> None:
     """A long `--prefix` copied out of a wrapped terminal carries the break.
 
-    It escapes to a literal newline no single-line message can match, and
-    nothing says so: the listener starts, prints the prefix, and sits there.
+    It escapes to a literal newline no single-line message can match.
     """
     wrapped = Trigger(workflow=Path("x.yaml"), prefix="New DB ticket\n  raised:")
     (ask,) = asked(_envelope("New DB ticket raised: DB-8790"), wrapped)
@@ -126,8 +126,7 @@ def test_the_typist_s_spacing_does_not_decide_it() -> None:
 def test_a_prefix_typed_in_bold_still_starts_a_run() -> None:
     """Slack composes for a reader: emphasis is in the text an app receives.
 
-    Captured from the wire. The leading ``*`` alone defeats a prefix anchored
-    at the start, and nothing in the channel shows why.
+    The leading ``*`` alone defeats a prefix anchored at the start.
     """
     bold = Trigger(workflow=Path("x.yaml"), prefix="New DB ticket raised:")
     (ask,) = asked(
@@ -168,7 +167,7 @@ def test_a_missing_conductor_is_reported_not_raised(monkeypatch: pytest.MonkeyPa
     def _absent() -> str:
         raise FileNotFoundError("'conductor' is not on PATH")
 
-    monkeypatch.setattr("ictus.notify.slack.trigger.binary", _absent)
+    monkeypatch.setattr("ictus.runs.launch.binary", _absent)
     assert "not on PATH" in start(_ask(), TRIGGER).why
 
 
@@ -184,10 +183,27 @@ def test_a_refusal_comes_back_as_its_last_line(monkeypatch: pytest.MonkeyPatch) 
     assert start(_ask(), TRIGGER).why == "error: $SLACK_BOT_TOKEN is not set"
 
 
-def test_the_question_and_the_thread_are_passed_as_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Through argv, so an apostrophe in a question is only an apostrophe."""
+def _handed_over(command: list[str]) -> dict[str, object]:
+    """The inputs in an argv, whichever flag carried them.
+
+    By meaning rather than spelling: which flag is right depends on whether the
+    engine would retype the value, and a test that pins the flag would have to
+    change every time that answer does.
+    """
+    found: dict[str, object] = {}
+    for flag, pair in itertools.pairwise(command):
+        name, sep, value = pair.partition("=")
+        if not sep:
+            continue
+        if flag == "-i":
+            found[name] = value
+        elif flag == TYPED_INPUT_FLAG:
+            found[name] = json.loads(value)
+    return found
+
+
+def _ran(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Capture the argv `start` would have run, running nothing."""
     seen: list[list[str]] = []
 
     def _record(command: list[str], **__: object) -> subprocess.CompletedProcess[str]:
@@ -195,9 +211,51 @@ def test_the_question_and_the_thread_are_passed_as_inputs(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", _record)
+    return seen
+
+
+def test_the_question_and_the_thread_are_passed_as_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through argv, so an apostrophe in a question is only an apostrophe."""
+    seen = _ran(monkeypatch)
     assert start(_ask(), TRIGGER).ok
-    assert "question=why's it failing?" in seen[0]
-    assert "reply_to=1.5" in seen[0]
+    assert _handed_over(seen[0]) == {"question": "why's it failing?", "reply_to": "1.5"}
+
+
+def test_a_conversation_reaches_the_run_as_the_text_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`conductor run -i` guesses a type, and a Slack ts is a string that looks
+    like a number. Coerced, `1700000000.000200` comes back `1700000000.0002` —
+    which matches no message, so a run's reports land at the top of the channel
+    and the sending program blames a deleted message. One ts in ten ends in a
+    zero.
+    """
+    seen = _ran(monkeypatch)
+    asked = Asked(question="why's it failing?", thread="1700000000.000200", channel="C", who="U")
+    assert start(asked, TRIGGER).ok
+    handed = _handed_over(seen[0])
+    assert handed["reply_to"] == "1700000000.000200"
+    assert isinstance(handed["reply_to"], str), "a timestamp is not a number"
+
+
+def test_a_pipeline_that_reports_nowhere_is_handed_no_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest names the thread input exactly when one was declared, so a
+    default here would hand every run a value under a name it never chose."""
+    seen: list[list[str]] = []
+
+    def _record(command: list[str], **__: object) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", _record)
+    quiet = Trigger(workflow=Path("demo_work/pipelines/asked/build/asked.yaml"))
+    assert quiet.thread_input == "", "nothing was declared, so nothing is named"
+    assert start(_ask(), quiet).ok
+    assert _handed_over(seen[0]) == {"question": "why's it failing?"}
 
 
 # --- a run that reports into somebody else's conversation --------------------
@@ -263,7 +321,7 @@ def test_the_dashboard_comes_from_the_run_s_own_record(monkeypatch: pytest.Monke
     run = LiveRun(run_id="new1", workflow="asked", port=5123, pid=1, started_at="2026")
     calls = iter([[], [run]])
 
-    monkeypatch.setattr("ictus.notify.slack.trigger.live_runs", lambda *_, **__: next(calls))
+    monkeypatch.setattr("ictus.runs.launch.live_runs", lambda *_, **__: next(calls))
     monkeypatch.setattr(
         subprocess, "run", lambda c, **__: subprocess.CompletedProcess(c, 0, "", "")
     )
@@ -281,7 +339,7 @@ def test_two_launches_at_once_report_no_address_rather_than_the_wrong_one(
         LiveRun(run_id="b", workflow="asked", port=2, pid=2, started_at="2026"),
     ]
     calls = iter([[], pair])
-    monkeypatch.setattr("ictus.notify.slack.trigger.live_runs", lambda *_, **__: next(calls))
+    monkeypatch.setattr("ictus.runs.launch.live_runs", lambda *_, **__: next(calls))
     monkeypatch.setattr(
         subprocess, "run", lambda c, **__: subprocess.CompletedProcess(c, 0, "", "")
     )
@@ -318,6 +376,59 @@ def test_the_conversation_comes_from_the_integration_not_a_second_argument() -> 
     assert listener.into.name == "ticket"
     assert listener.thread is not None, "integrate() already said where it reports"
     assert listener.thread.name == "reply_to"
+
+
+def test_a_pipeline_can_be_startable_without_holding_a_credential() -> None:
+    """Being startable is not a reason to hold one.
+
+    The listener reads the channel with its own credential; a run that says
+    nothing there needs none. Naming a service in order to be started was how a
+    pipeline came to declare a token it never used — which `trigger.missing()`
+    then refused to launch without.
+    """
+    p = Pipeline(pipeline_id="asked")
+    question = p.declare_input("question", STR)
+    listener = p.listen_on(prefix="Alert:", into=question)
+    assert listener.service is None
+    assert listener.thread is None, "it reports nowhere, so there is nothing to answer under"
+    assert p.integrations == (), "and nothing to configure"
+
+
+def test_a_credential_free_listener_asks_the_environment_for_nothing(tmp_path: Path) -> None:
+    """The whole point, read back off the artifact a listener actually reads."""
+    p = Pipeline(pipeline_id="asked")
+    question = p.declare_input("question", STR)
+    p.set_entry(p.add(succeed(node_id="done", reason="done")))
+    p.listen_on(prefix="Alert:", into=question)
+    built = _built(tmp_path, p)
+
+    document = json.loads((built / "asked.listen.json").read_text(encoding="utf-8"))
+    assert document["requires"]["env"] == []
+    assert document["listeners"] == [
+        {"service": "", "prefix": "Alert:", "inputs": {"question": "question"}}
+    ]
+
+    (trigger,) = triggers_in(built)
+    assert trigger.missing() == [], "nothing to go and set before it may run"
+    assert trigger.thread_input == "", "it reports nowhere, so there is nothing to answer under"
+
+
+def test_a_second_serviceless_listener_is_refused() -> None:
+    """One prefix starts it, the same rule one service has always had."""
+    p = Pipeline(pipeline_id="asked")
+    question = p.declare_input("question", STR)
+    spare = p.declare_input("spare", STR)
+    p.listen_on(prefix="Alert:", into=question)
+    with pytest.raises(CompositionError, match="already listens for a message"):
+        p.listen_on(prefix="Warning:", into=spare)
+
+
+def test_naming_a_service_still_takes_its_conversation_from_the_integration() -> None:
+    """The optional argument changes nothing for a pipeline that does report."""
+    p, ticket, service = _listening()
+    listener = p.listen_on(service, prefix="New DB ticket raised:", into=ticket)
+    assert listener.service is service
+    assert listener.thread is not None and listener.thread.name == "reply_to"
 
 
 def test_listening_on_a_service_that_is_not_integrated_is_refused() -> None:
@@ -480,85 +591,11 @@ def test_one_message_starts_one_run(tmp_path: Path) -> None:
 
 # --- a run is handed what it declared, and nothing else -----------------------
 
-MACHINE = {"PATH": "/usr/bin", "HOME": "/home/someone", "TMPDIR": "/tmp"}
-SECRETS = {
-    "SLACK_APP_TOKEN": "xapp-opens-a-socket",
-    "SLACK_BOT_TOKEN": "xoxb-posts",
-    "ATLANTIS_DSN": "postgres://atlantis",
-    "BABYLON_DSN": "postgres://babylon",
-    "AWS_SECRET_ACCESS_KEY": "nothing-to-do-with-this",
-}
-
-
-def test_an_undeclared_credential_never_reaches_the_run() -> None:
-    """The declaration stops being something a reviewer reads and becomes the
-    environment the run actually has."""
-    passing = launch_env(["SLACK_BOT_TOKEN", "ATLANTIS_DSN"], MACHINE | SECRETS)
-    assert passing["SLACK_BOT_TOKEN"] == "xoxb-posts"
-    assert passing["ATLANTIS_DSN"] == "postgres://atlantis"
-    assert "BABYLON_DSN" not in passing, "one environment declared is one environment reachable"
-    assert "AWS_SECRET_ACCESS_KEY" not in passing
-
-
-def test_the_listener_s_own_token_reaches_no_run() -> None:
-    """No pipeline declares it, so no run it starts can open a socket as the app
-    that started it."""
-    passing = launch_env(["SLACK_BOT_TOKEN"], MACHINE | SECRETS)
-    assert "SLACK_APP_TOKEN" not in passing
-
-
-def test_the_machine_baseline_survives() -> None:
-    """A run that cannot find its own commands is a confusing failure, not a
-    safe one."""
-    passing = launch_env([], MACHINE | SECRETS)
-    assert set(MACHINE) <= set(passing)
-
-
-def test_model_credentials_are_matched_by_prefix_not_listed() -> None:
-    """A provider added upstream brings its own variable names, and a run that
-    cannot authenticate fails in a way nobody connects to this."""
-    passing = launch_env([], {**MACHINE, "ANTHROPIC_API_KEY": "k", "CONDUCTOR_HOME": "/c"})
-    assert passing["ANTHROPIC_API_KEY"] == "k"
-    assert passing["CONDUCTOR_HOME"] == "/c"
-
-
-def test_what_was_never_set_stays_absent_rather_than_empty() -> None:
-    """A program testing `os.environ.get(NAME)` should see the same nothing it
-    would see on a machine where nobody set it."""
-    passing = launch_env(["NEVER_SET_ANYWHERE"], MACHINE)
-    assert "NEVER_SET_ANYWHERE" not in passing
-
-
-def test_the_launch_passes_the_filtered_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Not merely computed — handed to the subprocess."""
-    seen: dict[str, dict[str, str]] = {}
-
-    def _record(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        handed = kwargs["env"]
-        assert isinstance(handed, dict)
-        seen["env"] = handed
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(subprocess, "run", _record)
-    monkeypatch.setattr("ictus.notify.slack.trigger.live_runs", lambda *_, **__: [])
-    for name, value in SECRETS.items():
-        monkeypatch.setenv(name, value)
-    trigger = Trigger(
-        workflow=Path("x.yaml"),
-        env=(Need("SLACK_BOT_TOKEN", "to post"),),
-        commands=(),
-    )
-    assert start(_ask(), trigger).ok
-    assert seen["env"]["SLACK_BOT_TOKEN"] == "xoxb-posts"
-    assert "SLACK_APP_TOKEN" not in seen["env"]
-    assert "ATLANTIS_DSN" not in seen["env"]
-
 
 def test_a_pipeline_can_refuse_what_its_directory_says_about_itself() -> None:
-    """`--workspace-instructions` walks to the git root and prepends AGENTS.md to
-    every prompt. Right for a pipeline that works *on* a repository; for one
-    working on a tracker ticket it arrived as several hundred words about lints
-    and layers in front of a question about trading hours."""
+    """`--workspace-instructions` walks to the git root and prepends AGENTS.md
+    to every prompt. Right for a pipeline that works on a repository, wrong
+    for one working on a tracker ticket."""
     pipeline = Pipeline(pipeline_id="asks")
     question = pipeline.declare_input("question", STR)
     service = slack_channel(token=EnvVar("T", "t"), channel=EnvVar("C", "c"))

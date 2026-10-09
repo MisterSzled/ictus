@@ -9,8 +9,8 @@ from ictus.graph.node import GateChoice, GateNode
 from ictus.graph.ports import InputPort, PortType
 from ictus.graph.ref import tpl
 from ictus.graph.stage import Stage
-from ictus.stdlib.agents.briefing import briefing
-from ictus.stdlib.terminals.succeed import succeed
+from ictus.stdlib.exits.succeed import succeed
+from ictus.stdlib.llm.briefing import briefing
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,9 +22,7 @@ __all__ = ["APPROVE_OR_REJECT", "ReviewOption", "briefing_gate"]
 class ReviewOption:
     """One answer a reviewer can give.
 
-    ``ask_for_notes`` opens a multi-line box and captures what they type. Any
-    branch that sends work backwards should use it — a rejection with no reason
-    makes the next attempt a guess.
+    ``ask_for_notes`` opens a multi-line box and captures what they type.
     """
 
     value: str
@@ -51,23 +49,15 @@ def briefing_gate(
 ) -> Stage:
     """A stage that turns raw data into a decision, and reports which was taken.
 
-    Both options route to the same exit. That is deliberate: this stage's job is
-    to *obtain* a decision, not to act on one. It exposes ``decision`` as an
-    output, and the parent pipeline branches on it with a route condition:
+    Every option routes to the same exit: this stage obtains a decision and
+    does not act on one. The parent branches on the ``decision`` output:
 
         p.route(stage_node, proceed, when="{{ review.output.decision == 'approved' }}")
         p.route(stage_node, stop)   # catch-all, emitted last
 
-    Keeping the branch in the parent is what makes the stage reusable — the same
-    review step can gate a deploy in one pipeline and a refund in another.
-
-    The summariser earns its place: a gate prompt is the whole of what the
-    reviewer reads, and a raw object dump gets approved without being read.
-
     Contract: input ``data`` (``data_type``, object by default) in;
-    ``decision`` and ``summary`` (both string) out. Set ``data_type`` to match
-    whatever upstream produces — a stage that emits a string result will not
-    connect to an object port, which is the point.
+    ``decision`` and ``summary`` (both string) out. ``data_type`` must match
+    whatever upstream produces.
     """
     stage = Stage(stage_id=stage_id, description=description or f"Review {subject}")
     data = stage.body.declare_input("data", data_type, description=f"The {subject} to review")
@@ -100,10 +90,8 @@ def briefing_gate(
     recorded = stage.body.add(
         succeed(
             node_id="recorded",
-            # Declared as an input, not just referenced. Under
-            # ``context.mode: explicit`` a node sees only what it declares, so a
-            # template naming something absent from ``input:`` is an undefined
-            # variable at run time — after the human has already answered.
+            # Declared, not just referenced: under ``context.mode: explicit``
+            # a node sees only what it declares.
             inputs=(InputPort("decision", PortType.STRING),),
             reason=tpl("Decision recorded: ", review.ref("selected")),
         )

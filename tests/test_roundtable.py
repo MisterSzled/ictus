@@ -1,13 +1,9 @@
 """A roundtable — several people taking turns until they agree.
 
-The shape exists because a council cannot do this. Its voices run at once, so
-none of them has heard the others when it speaks; they converge on a record
-written by a third party. Here the turns are sequential, so the second speaker
-has heard the first *this round* and there is no lag inside a round at all.
-
-These tests are about that ordering and about what it costs: study once rather
-than every round, minutes once rather than every round, and turn order visible
-in the graph so a run can be watched.
+Sequential turns, so the second speaker has heard the first this round. These
+tests are about that ordering and what it costs: study once rather than every
+round, minutes once rather than every round, and turn order visible in the
+graph.
 """
 
 from __future__ import annotations
@@ -110,12 +106,8 @@ class TestTurnsAreSequential:
 class TestIndependenceBeforeInfluence:
     """Turn-taking anchors: only the first speaker is ever uninfluenced.
 
-    A live run of the converted `untapped` came back with four speakers agreeing
-    on everything, including a recommendation the source disqualified in the
-    file it would have to change — nobody re-read it after the first speaker
-    cited it. Four agreeing voices had approximated one voice and three
-    confirmations, which is what sequential turns produce unless something
-    forces a position down before anybody has been heard.
+    Without a position recorded before anybody is heard, four agreeing
+    speakers are one speaker and three confirmations.
     """
 
     def test_study_states_a_position_and_not_only_notes(self) -> None:

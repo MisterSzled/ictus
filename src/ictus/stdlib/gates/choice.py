@@ -27,8 +27,7 @@ def choice_gate(
     """A gate offering arbitrary options, as ``(value, label)`` pairs.
 
     Each option becomes its own outgoing edge, supplied by ``Pipeline.branch``.
-    Option order is the order given, and the first option is the path
-    ``--skip-gates`` takes in CI, so put the safe choice first.
+    ``--skip-gates`` takes the first option, so put the safe choice first.
     """
     if not choices:
         raise CompositionError(f"choice_gate {node_id!r} needs at least one choice")

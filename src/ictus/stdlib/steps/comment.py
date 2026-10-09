@@ -1,22 +1,14 @@
 """Add a remark to a named item, as a step in the graph. No model call.
 
-Nothing here knows Jira, or any other tracker. An ``Integration`` carries the
-program that posts one remark and this builds the step that runs it — so a
-second tracker is a new module under ``ictus.notify`` and no change at all to
-the graph, the stdlib, or any pipeline already written.
+Nothing here knows any tracker: an ``Integration`` carries the program that
+posts one remark, and this builds the step that runs it.
 
-Distinct from ``announce`` because the two are handed different things.
-An announcement goes to a *place* that was configured — a channel — and
-optionally hangs under an earlier message. A comment goes to an *item* the
-graph is carrying: a ticket named in the message that started the run. The
-programs take their arguments in different positions, and ``Integration``
-declares which it is, so one driven by the step meant for the other is refused
-while the pipeline is being written rather than silently posting nowhere.
+Distinct from ``announce``, which goes to a configured place. A comment goes
+to an item the graph is carrying. The programs take different arguments, and
+``Integration`` declares which it is.
 
-A comment that does not land never fails the run. The step always succeeds; one
-that could not post says ``posted: "false"`` and leaves its reason in ``why``
-and on stderr. A tracker being down, or a token rotated mid-run, is not a
-reason to throw away work that already succeeded.
+A comment that does not land never fails the run: the step says
+``posted: "false"`` and leaves its reason in ``why`` and on stderr.
 """
 
 from __future__ import annotations
@@ -36,9 +28,7 @@ if TYPE_CHECKING:
 
 __all__ = ["ITEM_PORT", "POSTED_PORT", "WHY_PORT", "comment"]
 
-#: Which item was commented on, as the service resolved it — a ticket key, not
-#: the URL it was found in. Named for what it is rather than for what any
-#: tracker calls it.
+#: Which item was commented on, as the service resolved it — a key, not a URL.
 ITEM_PORT = "issue"
 
 #: "true" when the remark landed, "false" when it could not be posted.
@@ -60,14 +50,11 @@ def comment(
 ) -> ScriptNode:
     """Post ``body`` onto ``on`` through ``to``, as a step in the graph.
 
-    ``on`` identifies the item and is usually a reference: the ticket named in
-    whatever started the run. It may be a bare key or the URL it arrived in —
-    resolving one from the other is the integration's job, and so is refusing a
-    URL that points somewhere the credential was not meant to go.
+    ``on`` identifies the item, usually by reference. A bare key or a URL;
+    resolving and vetting one is the integration's job.
 
-    ``body`` is usually a reference to whatever wrote it, so what gets posted is
-    visible in the dashboard and in ``ictus trace`` as the text the step was
-    actually given.
+    ``body`` is usually a reference to whatever wrote it, so what gets posted
+    is visible in the dashboard and in ``ictus trace``.
     """
     if not to.comments:
         raise CompositionError(
@@ -86,13 +73,11 @@ def comment(
         args=(
             "-c",
             to.program,
-            # Through argv rather than baked into the program: this is a
-            # rendered value, and interpolating one into source is how a quote
-            # in somebody's data becomes a syntax error at run time.
+            # Through argv, not interpolated into the program: a quote in
+            # somebody's data would otherwise be a syntax error.
             as_template(on),
-            # The program gives up at `timeout`; the engine kills the step five
-            # seconds later. The gap is what keeps a slow tracker from being a
-            # failed step.
+            # The program gives up at `timeout`, the engine five seconds later,
+            # so a slow tracker is not a failed step.
             str(timeout),
         ),
         uses=(to.name,),
@@ -103,9 +88,7 @@ def comment(
             OutputPort(POSTED_PORT, PortType.STRING, "'false' when it was not posted"),
             OutputPort(WHY_PORT, PortType.STRING, "Why it was not posted"),
         ),
-        # Not a contract the engine enforces. Its check runs before routes are
-        # evaluated and fails the run on stdout it cannot parse; the program
-        # always prints every field, and a reference that finds none falls back
-        # rather than raising.
+        # The engine's check runs before routes are evaluated and would fail
+        # the run on unparseable stdout. A missing reference falls back.
         enforce_outputs=False,
     )

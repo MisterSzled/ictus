@@ -10,7 +10,8 @@ end to end against two live runs. Version-specific. Fixtures:
 
 - `/ws` on the run's dashboard. Bidirectional.
 - `WebDashboard` subscribes to the engine's `WorkflowEventEmitter` and
-  rebroadcasts every event (`web/server.py:188`). Same feed the dashboard renders.
+  rebroadcasts every event (`web/server.py`, `WebDashboard.__init__`). Same feed
+  the dashboard renders.
 - An event is `{type, timestamp, data}`.
 - A run-scoped `RunRedactor` scrubs payloads before dispatch. Secrets do not
   reach subscribers.
@@ -24,11 +25,12 @@ waits forever. Connect first, then seed from `GET /api/state`, then dedupe on
 
 Token is needed for the WebSocket handshake and for mutating routes only.
 `GET /api/state`, `/api/gate-status`, `/api/info` and `/api/logs` answer with no
-token, guarded by Origin/Host alone. Observation needs no credential; only
-answering does.
+token, guarded by Origin/Host alone. History needs no credential; the live
+socket and answering both do.
 
-The socket and the JSONL event log carry byte-identical sequences — verified by
-comparing both for one run — so a fixture recorded from either is valid for both.
+The socket and the JSONL event log carry the same events in the same order —
+verified by comparing both for one run — so a fixture recorded from either is
+valid for both. The bytes differ: the log escapes non-ASCII, the socket does not.
 
 ## Events received
 
@@ -46,7 +48,7 @@ comparing both for one run — so a fixture recorded from either is valid for bo
 | `guidance_received` | mid-run steer |
 
 Also `script_*`, `set_*`, `wait_*`, `mcp_*`, `subworkflow_*`, `parallel_*`,
-`for_each_*` per step kind. ~45 types total.
+`for_each_*` per step kind. ~70 types total.
 
 `option_details` entries carry `label`, `value`, `route`, `prompt_for`,
 `multiline`, so free text on a choice arrives with the gate.
@@ -56,8 +58,9 @@ Also `script_*`, `set_*`, `wait_*`, `mcp_*`, `subworkflow_*`, `parallel_*`,
 `agents`, `routes`, `entry_point`, `run_id`, `yaml_source`.
 
 A human gate's `gate_presented` carries **no `prompt_id`** — that field is on the
-questions variant only (`engine/workflow.py:4153` vs `:5755`), and
-`/api/gate-status` reports `prompt_id: null` for a waiting gate.
+questions variant only. Both are emitted from `engine/workflow.py`; the one that
+sets `step_type: questions` is the one that carries it. `/api/gate-status`
+reports `prompt_id: null` for a waiting gate.
 
 ## Messages sent
 
@@ -81,7 +84,7 @@ have one, so a response that omits it is accepted against any prompt
 ## Reaping
 
 A `--web-bg` process exits only when all four hold
-(`_maybe_start_grace_timer`, `web/server.py:1437`):
+(`_maybe_start_grace_timer`, in `web/server.py`):
 
 1. the run is `--web-bg`
 2. `_workflow_completed` — root-level `workflow_completed` / `workflow_failed` seen
@@ -108,9 +111,10 @@ and the run record archived.
 - Fleet run record at `~/.conductor/runs/<run_id>.json`: `run_id`, `pid`,
   `workflow_path`, `workflow_name`, `started_at`, `event_log_path`, `port`
   (nullable), `mode`, `checkpoint_dir`.
-- On reap the record is **moved** to `~/.conductor/runs/terminal/<run_id>.json`,
-  so globbing `~/.conductor/runs/*.json` finds live runs only and needs no
-  staleness filter.
+- On a graceful exit the record is **moved** to
+  `~/.conductor/runs/terminal/<run_id>.json`. A killed or crashed run leaves its
+  record behind, so a glob of `~/.conductor/runs/*.json` is filtered on the pid —
+  never on age.
 - Dashboard port defaults to `0` — OS auto-select. Concurrent runs do not collide.
 - Auth: per-run `secrets.token_urlsafe(32)`, plus Origin/Host validation on every
   HTTP and WebSocket request.
@@ -124,7 +128,8 @@ and the run record archived.
 ## Rules
 
 - A node has no `hooks=` field. The engine executes no side effect at a step
-  boundary and rejects `workflow.hooks:` outright (`config/schema.py:3094`).
+  boundary and rejects `workflow.hooks:` outright (`config/schema.py`,
+  `_REMOVED_WORKFLOW_FIELDS`).
 - A side effect that belongs in the graph is a node: costed against
   `max_iterations`, routed, visible in the dashboard and in `ictus trace`.
 - A side effect that cannot be a node is a subscriber, and never enters the
@@ -138,28 +143,6 @@ and the run record archived.
 
 ## Starting a run from a message
 
-- Declared with `pipeline.listen_on(service, prefix=..., into=...)`, beside
-  `integrate`. The conversation comes from that service's `integrate(thread=)`.
-- Refused at composition: a service not integrated, one with `listens=False`,
-  a blank prefix, an `into` the pipeline does not declare or that is not a
-  string, an `into` that is also the thread, a second listener on one service.
-- `slack_channel` sets `listens=True`; `slack_webhook` does not.
-- Compiles to `build/<pipeline_id>.listen.json`, version `1`. Root pipelines
-  only — a stage has no run of its own to start.
-- Manifest holds: `workflow` (sibling filename), `listeners[]`
-  (`service`, `prefix`, `inputs.question`, `inputs.thread`), and `requires`
-  (`commands`, `env`) — every declared executable and every integration and MCP
-  env var, deduplicated by name.
-- `requires` exists because preflight is a command, not an artifact: nothing in
-  the workflow YAML records a declared executable or env var.
-- `ictus listen [FOLDER]` reads manifests under `FOLDER` recursively. No folder
-  answers gates only.
-- The listener runs `conductor run <workflow> -i ...`, never `ictus run`. It
-  needs the built artifact, not the pipeline source, its config, or the compiler.
-- `launch_command` in `interfaces/conductor/` builds that argv for both the CLI
-  and the listener. `--web-bg` detaches and serves the dashboard.
-- A manifest whose version differs, whose JSON is unreadable, or whose workflow
-  is not beside it is skipped with a warning; the other pipelines still serve.
-- First matching trigger wins, in sorted-path order. One message, one run.
-- Prefix matching skips `*`, `_`, `~` and backticks wherever whitespace is
-  allowed: Slack sends `*Bold:*`, and emphasis is in the text an app receives.
+Its own page, because it answers a different question from the rest of this one:
+this page is about attaching to a run that exists, that one about what brings a
+run into being. See [starting-from-a-channel.md](starting-from-a-channel.md).

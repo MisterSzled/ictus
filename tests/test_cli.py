@@ -13,8 +13,8 @@ from typer.testing import CliRunner
 
 from ictus import cli
 from ictus.cli import app
-from ictus.config import MINIMAL as MINIMAL_CONFIG
 from ictus.interfaces.conductor import ConductorBackend
+from ictus.runspec.config import MINIMAL as MINIMAL_CONFIG
 
 runner = CliRunner()
 
@@ -107,9 +107,8 @@ def test_emit_refuses_two_pipelines_claiming_one_filename(tmp_path: Path) -> Non
 def test_emit_lets_two_folders_hold_the_same_filename(tmp_path: Path) -> None:
     """Each folder builds into its own `build/`, so the names never meet.
 
-    Refusing this would mean a stdlib stage could be used in one pipeline per
-    repository — two pipelines both placing `read.yaml` beside their own
-    workflow is the ordinary consequence of reusing one.
+    Two pipelines both placing `read.yaml` is the ordinary consequence of
+    reusing a stdlib stage.
     """
     src = tmp_path / "pipelines"
     _write(src, "first", MINIMAL.format(pid="same_name"))
@@ -193,11 +192,7 @@ def test_dry_run_asks_for_a_plan_and_launches_nothing(
 def test_dry_run_does_not_demand_inputs_it_will_never_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Conductor plans from the workflow file alone, so the values are not read.
-
-    Requiring them would put the plan behind the very inputs it is read to
-    decide, which is the opposite of what a dry run is for.
-    """
+    """Conductor plans from the workflow file alone, so the values are not read."""
     calls = _capture(monkeypatch)
     folder = _write(tmp_path / "pipelines", "demo", NEEDS_INPUT)
     result = runner.invoke(app, ["run", str(folder), "--dry-run"])
@@ -348,8 +343,7 @@ demo.route(node, END)
 def launched(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
     """Intercept the launch, so a CLI test never starts a real Conductor process.
 
-    Not a convenience: `conductor` is on PATH in this repo's environment, so
-    without this a test of the run path spends money.
+    `conductor` is on PATH here, so without this a run-path test spends money.
     """
     calls: list[dict[str, object]] = []
 
@@ -479,27 +473,25 @@ def test_the_scaffold_works_once_the_decisions_are_made(tmp_path: Path) -> None:
 
 
 class TestEveryCommandIsReachable:
-    """Both entry points must offer the same commands.
+    """A command in the source must be a command in the program.
 
-    `python -m ictus.cli` *executes* the module, so an `if __name__` guard
-    written above a command stops the module before that decorator runs and the
-    command does not exist. The console script imports the module instead and
-    registers everything, so the two disagree. `trace` sat below the guard for a
-    release: `ictus trace` worked, `python -m ictus.cli trace` did not, and the
-    documentation looked wrong rather than the code.
-
-    This has to run the module as `__main__` in a subprocess. Importing it —
-    which is what every other test here does — makes the guard false and every
-    decorator run, so an in-process check passes with the bug still present.
+    The way to lose one is to add a module and not import it from
+    `cli/__init__.py`. Scans every file in the package for `@app.command()`
+    and asserts the running program offers each, as `__main__` in a subprocess.
     """
 
     def _declared(self) -> set[str]:
-        source = Path(cli.__file__).read_text(encoding="utf-8").splitlines()
+        package = Path(cli.__file__).parent
         return {
             line.split("def ", 1)[1].split("(", 1)[0]
-            for prev, line in itertools.pairwise(source)
+            for module in sorted(package.glob("*.py"))
+            for prev, line in itertools.pairwise(module.read_text(encoding="utf-8").splitlines())
             if prev.strip() == "@app.command()" and line.startswith("def ")
         }
+
+    def test_the_scan_finds_something(self) -> None:
+        """A glob that matches nothing would make every assertion below vacuous."""
+        assert len(self._declared()) >= 8
 
     def _as_main(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -515,8 +507,8 @@ class TestEveryCommandIsReachable:
         missing = sorted(name for name in self._declared() if f" {name} " not in listed)
         assert not missing, (
             f"{missing} decorated with @app.command() but absent from "
-            "`python -m ictus.cli --help` — the `if __name__ == '__main__'` guard "
-            "must stay below every command in cli.py"
+            "`python -m ictus.cli --help` — every module holding commands must be "
+            "imported from cli/__init__.py"
         )
 
     def test_trace_is_the_one_that_caught_it(self) -> None:

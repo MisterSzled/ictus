@@ -1,8 +1,7 @@
 """Reading back what a run actually did.
 
-A step's output says what it concluded; it does not say whether it looked at
-anything first, and those two runs read identically. The distinction is the
-cheapest quality signal there is, and the engine was already recording it.
+A step's output says what it concluded, not whether it looked at anything
+first. The engine records the difference already.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ictus import END, AgentNode, InputPort, OutputPort, Pipeline, PortType, Stage
-from ictus.interfaces.conductor.trace import find_logs, read_trace
+from ictus.interfaces.conductor.control.trace import find_logs, read_trace
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -101,7 +100,7 @@ def test_a_truncated_final_line_is_normal_on_a_live_run(tmp_path: Path) -> None:
 
 
 def test_logs_come_back_newest_first(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import ictus.interfaces.conductor.trace as trace_module
+    import ictus.interfaces.conductor.control.trace as trace_module
 
     monkeypatch.setattr(trace_module, "LOG_DIR", tmp_path)
     older = _log(tmp_path, _tool("a", "Read"), name="demo")
@@ -112,7 +111,7 @@ def test_logs_come_back_newest_first(tmp_path: Path, monkeypatch) -> None:  # ty
 
 
 def test_another_workflows_logs_are_not_returned(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import ictus.interfaces.conductor.trace as trace_module
+    import ictus.interfaces.conductor.control.trace as trace_module
 
     monkeypatch.setattr(trace_module, "LOG_DIR", tmp_path)
     _log(tmp_path, _tool("a", "Read"), name="demo")
@@ -125,8 +124,7 @@ def test_another_workflows_logs_are_not_returned(tmp_path: Path, monkeypatch) ->
 def test_a_downloaded_log_is_a_json_array_not_one_object_per_line(tmp_path: Path) -> None:
     """The dashboard's download button hands you the same events as an array.
 
-    Reading only the line-per-object shape parsed a downloaded log to nothing
-    and reported an empty run — indistinguishable from a run that did nothing.
+    Reading only the line-per-object shape parses one to nothing.
     """
     path = tmp_path / "conductor-logs.json"
     path.write_text(
@@ -160,8 +158,7 @@ def _turn(agent: str) -> dict[str, object]:
 def test_turns_are_counted_in_the_units_the_engine_enforces(tmp_path: Path) -> None:
     """The same event also carries a numeric index that advances about twice a round.
 
-    Counting those reported 102 for a step the engine killed "after 51 turns",
-    so a column meant to show a step nearing its cap read as double it.
+    Counting those reports 102 for a step the engine killed "after 51 turns".
     """
     path = _log(
         tmp_path,
@@ -187,13 +184,10 @@ def test_an_ordinary_step_is_not(tmp_path: Path) -> None:
 
 
 class TestDeclaredCeilings:
-    """A step is at its ceiling when it reaches *its own* limit, not the default.
+    """A step is at its ceiling when it reaches its own limit, not the default.
 
-    `verify` declares ``max_turns=200``. A real run used 50 of them and finished
-    cleanly, and the trace called it out in red as having hit the turn ceiling —
-    a fatal condition it reports precisely so nobody has to guess. Measuring
-    every step against the engine's fifty made the one alarm that matters fire
-    on a healthy run.
+    Measuring a step that declares ``max_turns=200`` against the engine's
+    fifty fires the one alarm that matters on a healthy run.
     """
 
     def _log(self, tmp_path: Path, step: str, turns: int) -> Path:
@@ -227,7 +221,7 @@ class TestDeclaredCeilings:
 
     def test_ceilings_are_collected_through_nested_stages(self) -> None:
         """A stage's steps appear in the parent run's log under their own names."""
-        from ictus.cli import _declared_ceilings
+        from ictus.cli.tracing import _declared_ceilings
 
         parent = Pipeline(pipeline_id="parent")
         stage = Stage(stage_id="inner")

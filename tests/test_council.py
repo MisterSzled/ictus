@@ -1,9 +1,7 @@
 """Councils and the voices on them.
 
-A council is only worth having if its members can disagree and the caller can
-act on the disagreement. The tests below are about those two things: that each
-voice is genuinely given something different to watch for, and that "they never
-agreed" arrives as an outcome rather than as a dead run.
+Two things: that each voice is given something different to watch for, and
+that "they never agreed" arrives as an outcome rather than a dead run.
 """
 
 from __future__ import annotations
@@ -19,7 +17,8 @@ from ictus.graph.ports import InputPort, OutputPort
 from ictus.graph.ref import tpl
 from ictus.interfaces.conductor import conductor
 from ictus.lint import lint_pipeline
-from ictus.stdlib import AGREED, HALTED, UNRESOLVED, Voice, council, succeed, voice
+from ictus.stdlib import AGREED, HALTED, UNRESOLVED, Voice, council, succeed
+from ictus.stdlib.llm import voice
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -91,17 +90,15 @@ class TestVoice:
     def test_satisfaction_is_about_the_record_not_the_material(self) -> None:
         """Otherwise `agreed` is unreachable and every council exhausts its rounds.
 
-        Observed on a live run: three voices assessing code with a real defect
-        all reported satisfied=false in both rounds — correctly, under the old
-        wording — and the council came back `unresolved` carrying a complete
-        report whose own dissent field said "Nothing is contested".
+        A voice assessing material with a real defect would withhold
+        satisfaction forever.
         """
         prompt = str(_agent(_council().body, "perf")["prompt"])
-        assert "`satisfied` is not about the material" in prompt
-        assert "including any disagreement you still hold" in prompt
+        assert "It is about the record, not the material" in prompt
+        assert "any disagreement you still hold included" in prompt
 
     def test_the_first_round_has_no_report_to_accept(self) -> None:
-        assert "If no previous report is shown below, you have not seen one" in str(
+        assert "No report shown below means you have not seen one" in str(
             _agent(_council().body, "perf")["prompt"]
         )
 
@@ -243,9 +240,8 @@ class TestInterjection:
     def test_an_absent_steer_does_not_kill_the_next_round(self) -> None:
         """ "Let them carry on" leaves no notes, and reading them is a hard error.
 
-        Verified against the engine's own Jinja settings: guarding only the gate
-        name renders "'dict object' has no attribute 'notes'" on every round
-        after a plain continue.
+        Guarding only the gate name renders "'dict object' has no attribute
+        'notes'" on every round after a plain continue.
         """
         prompt = str(_agent(_council(interject=True).body, "perf")["prompt"])
         assert "interject.output.additional_input is defined" in prompt
@@ -312,11 +308,10 @@ def test_a_council_reads_what_the_step_before_it_worked_out(
 
 class TestVoiceCost:
     def test_a_voice_is_denied_tools_by_default(self) -> None:
-        """Observed live: four voices with tools is four agents hunting the same file.
+        """Four voices with tools is four agents hunting the same file.
 
-        The material is already in the prompt. `tools: []` and an omitted key are
-        different things to Conductor — none versus all — so this only works
-        because ictus can express the empty list.
+        `tools: []` and an omitted key are different to Conductor — none
+        versus all — so this needs the empty list to be expressible.
         """
         assert _agent(_council().body, "perf")["tools"] == []
 
@@ -351,8 +346,7 @@ class TestCharge:
     def test_an_unset_optional_input_renders_nothing_not_the_none_literal(self) -> None:
         """The engine binds an absent optional input to None, so `is defined` is true.
 
-        Guarding on definedness put the literal "None" under a heading in every
-        voice's prompt — a model reads that as content.
+        Guarding on definedness puts the literal "None" under a heading.
         """
         prompt = str(_agent(_council().body, "perf")["prompt"])
         assert "{% if workflow.input.charge %}" in prompt
@@ -363,10 +357,7 @@ class TestCharge:
 class TestVerification:
     """Agreement measures convergence between voices. It is not evidence.
 
-    Four models given the same wrong material agree sooner, not later. A council
-    that ran on a project's own docs once produced a confident report in which a
-    third of the findings were already implemented — every voice agreed, and
-    every voice had read the same summary instead of the thing it described.
+    Four models given the same wrong material agree sooner, not later.
     """
 
     @staticmethod
@@ -394,8 +385,8 @@ class TestVerification:
 
     def test_it_is_told_to_refute_rather_than_improve(self) -> None:
         prompt = str(_agent(self._checked().body, "verify")["prompt"])
-        assert "refute it, not to improve it" in prompt
-        assert "agreement between them is no evidence" in prompt
+        assert "Refute it; do not improve it" in prompt
+        assert "Agreement between them is no evidence" in prompt
 
     def test_corrections_reach_the_next_round(self) -> None:
         """Otherwise the same refuted claim is argued again, with more confidence."""
@@ -441,10 +432,8 @@ class TestVerification:
 class TestUnverifiedClaims:
     """A lookup a voice could not perform must not leave as a finding.
 
-    The council that prompted this asserted four engine limitations that were
-    unwired fields; every voice had given up after one failed import, and the
-    output contract gave a blocked voice nowhere to say so except `concerns`,
-    which the report then read as a change request.
+    Without `unchecked`, a blocked voice has nowhere to say so but `concerns`,
+    which the report reads as a change request.
     """
 
     def test_a_voice_declares_somewhere_to_put_a_failed_lookup(self) -> None:
@@ -454,8 +443,8 @@ class TestUnverifiedClaims:
 
     def test_a_voice_is_told_not_to_launder_it_into_concerns(self) -> None:
         prompt = str(_agent(_council().body, "perf")["prompt"])
-        assert "put it in `unchecked`" in prompt
-        assert "Do not route it into `concerns`" in prompt
+        assert "goes in `unchecked`" in prompt
+        assert "never into `concerns`" in prompt
         assert "fact about this environment, not about" in prompt
 
     def test_every_voice_reaches_the_report_with_it(self) -> None:
@@ -509,11 +498,8 @@ class TestVoiceTurnBudget:
 class TestPerVoiceChecking:
     """`verify_each` puts a checker behind every voice, before the round is written.
 
-    The failure it removes is triage. One checker facing a report of thirty
-    claims spends about a lookup on each, which buys the docstring and not the
-    code under it — observed on a live run, where the group checker struck out a
-    true finding after reading one of the two cases it covered. Four checkers
-    running at once have the same budget for a quarter of the material each.
+    Removes triage: one checker facing thirty claims spends about a lookup on
+    each, where four checkers have the same budget for a quarter each.
     """
 
     def _scope(self, **kwargs: object) -> Scope:
@@ -579,15 +565,10 @@ class TestPerVoiceChecking:
         assert "do not quietly restate it" in prompt
 
     def test_a_checker_is_told_that_a_citation_is_not_a_claim(self) -> None:
-        """Every citation in a report can be right and every inference wrong.
-
-        Observed: a table cited the correct class for a checkpoint field and
-        recommended wiring it, while the sentence disqualifying it sat in the
-        same docstring nobody re-opened.
-        """
+        """Every citation in a report can be right and every inference wrong."""
         prompt = str(_agent(self._scope().body, "perf_check")["prompt"])
         assert "A correct citation is not a correct claim" in prompt
-        assert "whether anything nearby disqualifies the conclusion" in prompt
+        assert "what nearby disqualifies the conclusion" in prompt
 
     def test_a_checker_can_go_and_look(self) -> None:
         """One that cannot is another voice with an opinion."""
@@ -604,11 +585,8 @@ class TestPerVoiceChecking:
 class TestVoicesAnswerEachOther:
     """Without this a voice reads only the synthesis, never its neighbours.
 
-    The report is one more agent's compression of what everybody said, so a
-    voice reading it can restate its position but cannot disagree with anyone in
-    particular. Observed over several live runs: the voices discovered and
-    asserted round after round and never converged, because there was nothing
-    for them to converge *on* except a summary nobody wrote back to.
+    A compression of what everybody said lets a voice restate its position but
+    not disagree with anyone in particular.
     """
 
     def test_it_is_on_by_default(self) -> None:

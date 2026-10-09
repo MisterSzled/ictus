@@ -1,8 +1,7 @@
 """Fan-out over a run-time list.
 
-The claim under test is that ictus can express Conductor's ``for_each`` — a
-width the author does not know — and that everything about it which is only
-discoverable at run time is refused at composition instead.
+That ictus can express Conductor's ``for_each``, and that what would
+otherwise only be discoverable at run time is refused at composition.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from ictus.graph.ports import InputPort, OutputPort
 from ictus.graph.ref import tpl
 from ictus.interfaces.conductor import conductor
 from ictus.lint import lint_pipeline
-from ictus.stdlib.terminals import succeed
+from ictus.stdlib.exits import succeed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -229,9 +228,8 @@ def test_an_unknown_aggregate_port_is_refused() -> None:
 def test_mapping_over_a_stage_is_refused_rather_than_silently_wrong() -> None:
     """Conductor would accept it; ictus cannot yet bind an item to a child's ports.
 
-    `input_mapping` is built from graph edges and a loop item is not a node an
-    edge can start from, so the emitted group handed every iteration the
-    parent's own workflow inputs instead of its item.
+    `input_mapping` is built from graph edges, and a loop item is not a node
+    an edge can start from.
     """
     from ictus.graph.stage import Stage
 

@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ictus import END, EnvVar, InputPort, Pipeline, PortType, RunSignal, tpl
+from ictus.assemble.announcements import apply_integrations
 from ictus.errors import CompositionError
 from ictus.graph.stage import Stage
-from ictus.integrate import apply_integrations
 from ictus.lint import lint_pipeline
 from ictus.notify.jira import jira_cloud
 from ictus.notify.slack import slack_channel
-from ictus.sources import readonly_jira
+from ictus.sources.jira import readonly_jira
 from ictus.stdlib import MISSING, READ, announce, approval_gate, comment, read_ticket, succeed
 
 if TYPE_CHECKING:

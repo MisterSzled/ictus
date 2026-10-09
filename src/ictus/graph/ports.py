@@ -1,10 +1,8 @@
 """Ports — the typed boundary of a node.
 
-``PortType`` is deliberately the exact set of types Conductor accepts on the
-wire (``OutputField.type`` / ``InputDef.type``). Carrying refinements Conductor
-cannot represent — a distinct TEXT or JSON — makes port equality mean something
-at composition time that is erased at emission, which both rejects compatible
-pairs and accepts incompatible ones. One type set, one meaning.
+``PortType`` is exactly the set Conductor accepts on the wire
+(``OutputField.type`` / ``InputDef.type``). A refinement it cannot represent
+would mean something at composition that is erased at emission.
 """
 
 from __future__ import annotations
@@ -17,6 +15,13 @@ from ictus.errors import CompositionError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+__all__ = [
+    "InputPort",
+    "OutputPort",
+    "PortConnection",
+    "PortType",
+]
 
 
 class PortType(StrEnum):
@@ -36,11 +41,8 @@ class PortType(StrEnum):
 class OutputPort:
     """A named, typed value a node produces.
 
-    ``element`` gives an array's item shape. It is not decoration: it is emitted
-    as the ``items:`` schema, which is what tells the model producing the array
-    which keys to put in each entry. Without it a fan-out over the array reads
-    fields nobody asked for — every iteration then fails with "'dict object' has
-    no attribute", after the array has already been paid for.
+    ``element`` is an array's item shape, emitted as the ``items:`` schema,
+    which is what tells the model which keys to put in each entry.
     """
 
     name: str
@@ -63,9 +65,8 @@ class OutputPort:
 class InputPort:
     """A named, typed value a node consumes.
 
-    ``optional`` is load-bearing: it becomes the ``?`` suffix on the emitted
-    ``input:`` reference, which is what lets a loop back-edge resolve on the
-    first pass before the upstream node has ever run.
+    ``optional`` becomes the ``?`` suffix on the emitted ``input:`` reference,
+    which is what lets a loop back-edge resolve on the first pass.
     """
 
     name: str

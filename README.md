@@ -6,49 +6,82 @@ emitted as Conductor YAML. Conductor executes.
 
 Free software under the **GNU General Public License v3 or later** — see
 [LICENSE](LICENSE). It comes with no warranty, to the extent permitted by law.
+Pre-1.0: the stdlib's constructors are the API and they still move, so every
+rename and removal is in [CHANGELOG.md](CHANGELOG.md).
 
-    src/ictus/               the library
-      __init__.py            the one public surface
-      errors.py              what ictus raises, and why
-      cli.py                 emit / lint / validate / run
-      graph/                 the composition model — knows no engine
-        values.py            the value domain that crosses a node boundary
-        ports.py             typed inputs and outputs
-        ref.py               typed references and templates
-        node.py              one class per kind of work
-        pipeline.py          the graph: control edges, data edges, loop bounds
-        stage.py             a reusable sub-graph
-      interfaces/            the boundary to whatever executes a graph
-        __init__.py          Backend, Capabilities, Document
-        conductor/           every Conductor-shaped thing, and nothing else
-          workflow.py        the workflow: block and the defaults worth stating
-          agents.py          one node to one agents: entry
-          templates.py       typed references into Conductor's Jinja
-          serialize.py       YAML text, without altering any value
-          lints.py           rules true because of how Conductor runs
-      lint/                  composition rules that hold for any graph
-        rules.py             the individual checks
-      stdlib/                ready-made primitives, one per module
-        gates/               human decision points
-        agents/              model calls
-        steps/               zero-model steps (set, wait, script)
-        terminals/           explicit exits
-        stages/              reusable sub-graphs
+## A pipeline
 
-    demo_work/               what a *consumer* of ictus writes, not the library
-      pipelines/
-        <name>/              one folder per pipeline — the running contract
-          pipeline.py        the composition
-          input.md           what to run it on
-          build/             emitted YAML, committed so diffs show what runs
-      scripts/               shell steps invoked by script nodes
+A pipeline is a folder, and `pipeline.py` is the graph in it:
 
-`ictus/__init__.py` is the only public surface — `ictus.graph` deliberately
-re-exports nothing, so there is one place a name is exported from rather than
-two that can drift.
+```python
+from ictus import AgentNode, InputPort, OutputPort, Pipeline, PortType, tpl
+from ictus.stdlib import approval_gate, succeed
 
-Nothing in `src/` imports from `demo_work/`. The demo is there to be read and
-run; deleting it would not touch the library.
+STR = PortType.STRING
+
+pipeline = Pipeline(pipeline_id="review", description="Summarise a diff, then ask a person")
+
+read = pipeline.add(
+    AgentNode(
+        node_id="read_diff",
+        prompt="Summarise the risk in the staged diff, in five lines.",
+        declared_outputs=(OutputPort("summary", STR, "What changed, and the risk"),),
+    )
+)
+gate = pipeline.add(
+    approval_gate(
+        node_id="ship_it",
+        prompt=tpl("Ship this?\n\n", read.ref("summary")),
+        inputs=(InputPort("summary", STR),),
+    )
+)
+shipped = pipeline.add(succeed(node_id="shipped", reason="approved"))
+held = pipeline.add(succeed(node_id="held", reason="a person said no"))
+
+pipeline.set_entry(read)
+pipeline.connect(read, "summary", gate, "summary")
+pipeline.branch(gate, {"approved": shipped, "rejected": held})
+```
+
+Beside it, `config.yaml` says how it runs (`provider: claude-agent-sdk`),
+`input.md` carries this run's values, and `build/` holds the emitted YAML —
+committed, so a diff shows what will actually execute.
+
+```sh
+ictus emit   pipelines/review     # compile to Conductor YAML
+ictus lint   pipelines/review     # composition rules, writes nothing
+ictus run    pipelines/review     # re-emit, preflight, then launch
+```
+
+`read.ref("summary")` is checked when it is written: misname the port and the
+line raises, rather than the run producing a prompt with a hole in it.
+`branch` refuses to leave a gate choice unrouted. Both cost nothing; a live run
+costs money and minutes.
+
+## What is already built for you
+
+**[STDLIB.md](STDLIB.md) is the catalogue** — every ready-made constructor, what
+it is for, its options, and what it produces. It is checked against the code by
+the test suite, so it describes the stdlib that exists rather than the one that
+used to. `ictus stdlib` prints the same list from the installed library, and
+`ictus stdlib <term>` searches it by name or by what a thing does.
+
+| You want | Reach for |
+|---|---|
+| a person to approve, choose, or answer questions | `approval_gate`, `choice_gate`, `ask_human`, `ask_human_for` |
+| a step that calls no model | `constant`, `bindings`, `counter`, `wait`, `shell`, `save_text` |
+| to report to a channel, or comment on a ticket | `announce`, `comment` — through an `Integration` built under `ictus.notify` |
+| to read a database or a ticket | `query`, `fetch` — through a `Datasource` built under `ictus.sources` |
+| to end the run, distinguishably | `succeed`, `fail` |
+| a command whose failure you route on | `try_shell` |
+| to try until something is good enough | `converge` |
+| to look something up until the question is answered | `investigate`, `read_ticket` |
+| several models to argue until they agree | `council` (they poll), `roundtable` (they take turns) |
+
+`from ictus.stdlib import ...` for all of it. The folders under
+`src/ictus/stdlib/` group these by what they *are*, which matters when adding
+one and not when using one — [source-layout.md](docs/source-layout.md) draws
+them.
 
 ## Three tiers
 
@@ -63,18 +96,24 @@ Conductor has no nested-step construct inside an agent. `type: workflow` is its
 only nesting, which is what a stage compiles to — its own entry point, its own
 loops and gates, and one iteration of the parent's budget.
 
+A stage and a scope cost the same. What a scope adds is that a bad ending is
+something you handle rather than something that kills the run, which is why it
+is a folder and not a return annotation.
+
 ## The engine boundary
 
 `ictus.interfaces` is the only place allowed to know an engine's spelling — its
 field names, template dialect, iteration accounting, CLI. `graph/` contains zero
-Conductor strings, and that is checkable rather than aspirational: a grep for
-Conductor's vocabulary above `interfaces/` should return nothing.
+Conductor strings, and that is checkable rather than aspirational:
+`tests/test_boundaries.py` tokenises each module and fails on the engine's
+vocabulary reaching one above `interfaces/`.
 
-A `Backend` supplies four things: what it can express (`Capabilities`), how to
-render a graph (`compile`), its own extra lint rules, and how to validate and
-run what it produced. Rules like "a route list with no catch-all raises at run
-time" belong to a backend, not to graphs in general, so `lint_pipeline(p)`
-without a backend reports only what is true anywhere.
+A `Backend` supplies what it can express (`Capabilities`), how to render a
+graph (`compile`), its own extra lint rules, what this machine must provide
+before a launch (`preflight`), and how to validate and run what it produced.
+Rules like "a route list with no catch-all raises at run time" belong to a
+backend, not to graphs in general, so `lint_pipeline(p)` without a backend
+reports only what is true anywhere.
 
 Not a plan to leave Conductor — a way to keep the coupling countable.
 
@@ -97,7 +136,7 @@ is written rather than recovered from prompt text by a regular expression:
 prompt = tpl(
     "Break this plan into steps.\n\n",
     plan.ref("plan"),
-    optional("Address these notes:\n", ref_to("review", "notes", STRING)),
+    optional("Address these notes:\n", ref_to("review", "notes", STR)),
 )
 ```
 
@@ -119,253 +158,33 @@ Every rejection happens at the call that introduces it: a port type mismatch, a
 foreign node, an unrouted gate choice, a second unconditional route from one
 node (Conductor takes the first match, so the second would be silently dropped).
 
-## What the lints add
+What cannot be refused at the call is refused by `ictus lint`, which is why both
+exist. `conductor validate` checks every reference it can see; the ones it
+cannot — an unreachable agent, routes with no catch-all, a reference to an
+output field that was never declared, a stage whose contract has drifted — are
+silent until a run is in flight. Each rule names itself at the line that writes
+it, so run it rather than read a list of them here.
 
-`conductor validate` checks every reference it can see. These it cannot, and each
-is silent until a run is already in flight:
+## Where to go next
 
-- an agent unreachable from the entry point
-- conditional routes with no catch-all — a **runtime** error that passes validation
-- a reference to an output *field* that was never declared (only the agent
-  segment is checked)
-- a duplicate agent name
-- a stage whose contract has drifted from the workflow it hosts
-- a required input nothing is wired to
+`STDLIB.md` is the catalogue, and `ictus stdlib <term>` searches it from the
+installed library. Each page below answers one question and says at the top when
+to read it.
 
-## The stdlib
+| | |
+| --- | --- |
+| [running a pipeline](docs/running-a-pipeline.md) | the folder, the commands, what a person is asked |
+| [configuration.md](docs/configuration.md) | every `config.yaml` setting |
+| [wiring.md](docs/wiring.md) | `connect`, `route`, `feed`, and conditions |
+| [scopes.md](docs/scopes.md) | outcomes, and the two scopes with a trap |
+| [deliberation.md](docs/deliberation.md) | `council` or `roundtable`, and what the knobs cost |
+| [preflight.md](docs/preflight.md) | what is checked before anything is spent |
+| [reporting.md](docs/reporting.md) | getting a run's progress out to people |
+| [run-events.md](docs/run-events.md) | attaching to a live run |
+| [starting-from-a-channel.md](docs/starting-from-a-channel.md) | a message in a channel starting one |
+| [reaching-the-project.md](docs/reaching-the-project.md) | what a step can see, and how to widen it |
+| [gotchas.md](docs/gotchas.md) | behaviour the graph did not predict |
+| [source-layout.md](docs/source-layout.md) | where everything is, for working on ictus |
 
-One primitive per module, so the docstring beside a thing is about that thing.
-**[STDLIB.md](STDLIB.md) is the catalogue** — every constructor, what it is for,
-its options and what it produces.
-
-| Group | Emits | What's there |
-|---|---|---|
-| `gates/` | `human_gate`, `questions` | `approval_gate`, `choice_gate`, `ask_human`, `ask_human_for` |
-| `agents/` | `agent` | `briefing`, `verdict`, `voice`, `validate_mcp`, `remediate` |
-| `steps/` | `set`, `wait`, `script` | `constant`, `bindings`, `counter`, `wait`, `shell`, `save_text`, `announce` |
-| `terminals/` | `terminate` | `succeed`, `fail` |
-| `stages/` | `workflow` | `briefing_gate`, `resolve_unknowns`, `script_sequence`, `validate_mcps`, and the scopes `converge`, `council` and `roundtable` |
-
-Each stage is a whole sub-graph costing its caller one iteration. The last three
-are **scopes** — a stage whose every exit is an outcome the caller routes on,
-rather than a failure that raises past it.
-
-- `converge` is a bounded try/judge loop: produce, assess, revise, and exit
-  either way.
-- `council` **polls.** Several `voice` nodes assess at once and a synthesis step
-  writes each round up for the next. Its voices never hear each other directly —
-  they run concurrently — so they converge on a *record*, and the round-lag is
-  the best a parallel group can do.
-- `roundtable` **talks.** Everyone reads alone first, once, then `speaker` nodes
-  take turns: the second has heard the first *this* round, the last has heard
-  everyone, and the minutes are written once at the end rather than once a
-  round. No lag inside a round at all.
-
-Reach for `council` when the standpoints are independent and you want breadth,
-and for `roundtable` when you want them to argue. The cost of arguing is
-wall-clock — a round is the sum of its turns rather than the longest of them —
-and in a roundtable **order is part of the design**: whoever speaks last has
-heard everyone.
-
-## Preflight
-
-A pipeline declares what it needs from the environment, where it is written:
-
-```python
-pipeline.require_mcp(
-    McpServer(
-        name="github",
-        purpose="Read the change set and comment on its PR",  # read by whoever configures it
-        transport=McpTransport.STDIO,
-        command="github-mcp-server",
-        args=("stdio",),
-        env=(EnvVar("GITHUB_TOKEN", "a token with repo:read and pull_request:write"),),
-        setup_hint="Install github-mcp-server, then `export GITHUB_TOKEN=$(gh auth token)`",
-    )
-)
-```
-
-`ictus run` checks those before it launches anything, and refuses if they are
-unmet — a database reset should not get halfway before discovering a token is
-missing. `--probe` (on by default) additionally opens each connection, which
-catches a rejected credential that a "is the variable set?" check cannot.
-`--skip-preflight` overrides.
-
-Preflight also exists *inside* a run. `validate_mcps` is a stage: one
-`validate_mcp` agent per server, all in a parallel group, then a gate if any
-failed that loops back so the person can connect the thing and retry without
-losing the run.
-
-The in-workflow check earns its model call by answering a question the CLI
-cannot: the command can be installed, the token set and the endpoint answering
-while the server never reaches the model. Only asking the model to *use* it
-proves the connection end to end — and being a node, it is visible in the
-dashboard while it happens.
-
-An agent is also the only node type Conductor permits inside a parallel group;
-scripts, waits, gates, sub-workflows and terminals are all rejected as members.
-
-The gate offers three ways out, not two:
-
-```
-Help me fix it                → a helper that talks you through it
-I have fixed it — check again → straight back to the checks
-Abort the run                 → terminate, status: failed
-```
-
-"Help me fix it" routes to a `remediate` node carrying Conductor's `dialog`, so
-it opens a multi-turn conversation — in the dashboard when one is served, in the
-terminal otherwise. Whatever it does, the route returns to the checks: a claimed
-fix is only believed once it passes. (`dialog` is forbidden on a gate, so the
-helper must be a separate node — which the node types already enforce, since
-only a model call carries the field.)
-
-That helper draws one hard line, and it is a security boundary rather than a
-preference: **it never handles credentials.** It diagnoses, and repairs what
-needs no secret. The moment a fix needs a token or an access change it stops and
-hands over the exact command to run in your own shell. Nothing asks you to paste
-a secret into a conversation with a model, and no secret value is printed back.
-
-Two commands, two questions, deliberately not merged:
-
-| | asks | must pass on a machine with no credentials |
-|---|---|---|
-| `ictus validate` | is this workflow well-formed? | **yes** — else CI cannot check the committed artifact |
-| `ictus preflight` | can *this* machine run it? | no — that is the whole point |
-
-Secrets are never emitted. ictus writes the reference `${GITHUB_TOKEN:-}` and
-checks separately that the variable is set. The empty default is load-bearing: a
-bare `${VAR}` that cannot be expanded is a hard error in Conductor's loader, so
-committing one would make the artifact unvalidatable anywhere the secret is
-absent.
-
-## Asking a person for something
-
-A gate offers a decision among known options. `ask_human` collects *values* — a
-path, an id, a name — and all of them cost one iteration together, not one each:
-
-```python
-ask_human(
-    questions=(
-        Question(id="api_path", text="Where is the API repo checked out?", required=True),
-        Question(id="env", text="Which environment?", choices=("staging", "prod")),
-    )
-)
-```
-
-Each named question becomes a typed output port, so `ask.ref("api_path")` is
-checked and renders `{{ ask.output.answers.api_path }}`.
-
-Some questions cannot be written in advance — a ticket touching an unknown
-number of repositories has an unknown number of questions. `ask_human_for`
-takes them from an upstream node instead, and `resolve_unknowns` is the whole
-pattern: work out what is missing, ask **only** about that, carry the answers
-out.
-
-Asking unconditionally is the easy version and the wrong one. A pipeline that
-stops to ask about things it already knows gets skipped past, and then the one
-time it mattered nobody read it either.
-
-## Things Conductor defaults that will bite you
-
-- `limits.max_iterations` defaults to **10 total step executions**. A loop needs
-  more, so `Pipeline` requires `loop_passes` once the graph has a cycle and
-  derives the bound from the graph.
-- `context.mode` defaults to `accumulate`, under which `input:` is parsed and
-  never consulted. ictus emits `explicit`, which is what makes the port graph
-  mean something at run time.
-- `runtime.provider` defaults to **copilot**. ictus always emits it, so the
-  choice is visible in the diff rather than discovered on a failed run.
-- Checkpointing is failure-only by default, which covers the crash that raises
-  and none of the ones that do not — a hung provider, a killed process, a closed
-  laptop. ictus emits `checkpoint.every_agent` on every workflow so `conductor
-  resume` always has a point to go back to.
-- `limits.timeout_seconds` is unset, so nothing bounds elapsed time: a budget
-  bounds spend and `max_iterations` bounds step count, and a run can sit for
-  hours moving neither. `timeout_seconds` in `config.yaml` sets the ceiling.
-
-## The running contract
-
-A pipeline is a folder, not a module — three files, three questions:
-
-    pipelines/needs-council/
-      pipeline.py            what the graph is       (composition)
-      config.yaml            how it runs             (policy)
-      input.md               what to run it on       (this run's values)
-      build/                 emitted YAML, committed
-
-`ictus init <folder>` writes all three. `config.yaml` is required and the minimal
-one is a line:
-
-    provider: claude-agent-sdk
-
-`provider` has no default because Conductor's is `copilot`, and a pipeline that
-silently inherited it is how four emitted workflows once ran somewhere nobody
-chose. Policy lives here rather than in the composition so a pipeline moves
-between providers without editing Python, and so a value set in both places and
-set differently is refused instead of silently resolved.
-
-`input.md` is YAML frontmatter over a Markdown body — the shape Conductor
-already uses for `SKILL.md` and plugin agents, so it is one convention across
-both tools. Frontmatter holds the short values; the body is the long one, and
-which input it feeds is declared once with `declare_input(..., prose=True)`.
-
-    ---
-    scope: the stdlib and the CLI      # a declared input
-    repo: ../../some-project           # optional; relative to this file
-    ---
-    The body feeds the input declared with prose=True.
-
-A key matching no declared input is refused rather than ignored: `scpoe:` doing
-nothing quietly is how a run does the default thing and nobody notices until the
-output is wrong.
-
-The work happens in the directory you invoke it from, so `cd` to a project and
-go. `repo:` — or `--repo` — overrides that, which is how a run that touches a
-particular checkout says so in something you can commit.
-
-## Nothing starts without a person
-
-Every pipeline gets a confirmation gate at its entry point, unless its
-`config.yaml` says `start_gate: false`. The run loads, the dashboard comes up
-with the whole graph in it and the actual input values rendered in the prompt,
-and nothing happens until someone chooses.
-
-This exists because Conductor's dashboard is a view onto a live engine, not a
-launcher: the web API has `stop`, `kill` and `resume` but no start, and
-`--dry-run` returns before the dashboard is built. A human gate costs no provider
-call and no money, so it is the one mechanism that can hold a run open for
-inspection. It is added at emit time, so what is committed in `build/` is what
-runs — a confirmation step that only appeared at launch would make the artifact
-a lie.
-
-Declining is a *success*: nothing was attempted, so nothing failed, and a caller
-should not have to treat "a person looked at it and said no" as an error.
-
-## Usage
-
-    make soundcheck            # lint, types, tests, emit, and conductor validate
-    make run WF=smoke-test     # run that folder, dashboard on
-
-    cd ~/work/my-service
-    ictus run ~/pipelines/needs-council            # input.md supplies the inputs
-    ictus run ~/pipelines/needs-council -i scope='the stdlib and the CLI'
-    ictus run ~/pipelines/needs-council -f focused-review.md
-
-    ictus emit pipelines/      # each folder's own build/
-    ictus lint pipelines/      # composition rules only, writes nothing
-    ictus validate pipelines/  # hands the emitted YAML to conductor
-
-    ictus watch pipelines/needs-council --follow   # report what no step can see
-    ictus listen --allow U0123ABC                  # answer gates from Slack buttons
-
-A pipeline that calls `pipeline.integrate(...)` reports into a channel from
-inside the run: an announcement before every gate, the start gate included, and
-before every ending. `watch` reports what no step can — a step failing, a budget
-crossed, the engine dying — and `listen` answers a gate when its button is
-pressed. [smoke/README.md](smoke/README.md) walks through all three without a
-Slack workspace.
-
-`soundcheck` ends with `conductor validate`, and that step is not optional: a
-green build that never asked Conductor whether the output loads has checked
-nothing.
+`AGENTS.md` is the contributor's page: the environment, the layer rules and the
+conventions nothing enforces.

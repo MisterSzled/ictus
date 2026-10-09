@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ictus.websocket import HandshakeError, WebSocket, connect
+from ictus.net.websocket import HandshakeError, WebSocket, connect
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -159,7 +159,7 @@ def test_the_query_string_survives(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, host: str, port: int, path: str, **kwargs: object) -> None:
             seen.update({"host": host, "port": port, "path": path, **kwargs})
 
-    monkeypatch.setattr("ictus.websocket.WebSocket", _Fake)
+    monkeypatch.setattr("ictus.net.websocket.WebSocket", _Fake)
     connect("wss://wss-primary.slack.com/link/?ticket=abc&app_id=A1")
     assert seen["host"] == "wss-primary.slack.com"
     assert seen["port"] == 443
@@ -205,10 +205,8 @@ def test_a_character_split_across_fragments_survives() -> None:
 def test_a_ping_is_answered_with_its_own_payload() -> None:
     """The dashboard drops a connection whose pong does not echo the ping.
 
-    uvicorn's websockets implementation pings every 20 s with four random bytes
-    and accepts only a pong carrying those bytes back; an empty pong left every
-    watcher disconnected forty seconds after it attached. Reproduced against a
-    live dashboard before this was fixed.
+    uvicorn's websockets implementation pings every 20 s with four random
+    bytes and accepts only a pong carrying those bytes back.
     """
     seen: list[tuple[int, bytes]] = []
 

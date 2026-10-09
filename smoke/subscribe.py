@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """Attach to a live run, answer its gates, and leave before it reaps.
 
-The harness behind ``docs/run-events.md``: it drives a real run unattended so
-the event surface can be checked end to end, and it is what recorded the
-fixtures in ``tests/fixtures/``.
+The harness behind ``docs/run-events.md``, and what recorded the fixtures in
+``tests/fixtures/``. Uses the library — ``live_runs``, ``WebSocket``,
+``history`` — plus the gate answering it does not cover yet.
 
-It uses the library rather than reimplementing it — ``live_runs`` to find the
-run, ``WebSocket`` to talk to it, ``history`` to seed. What is left here is the
-part the library does not do yet: *answering* a gate, which is phase 4. When
-that lands this file should shrink again rather than grow.
-
-    python3 smoke/subscribe.py                       # take the first option
-    python3 smoke/subscribe.py smoke_gate=rejected:no thanks
-    python3 smoke/subscribe.py --run a1b2c3d4 ship_it=approved
+    uv run python3 smoke/subscribe.py                       # take the first option
+    uv run python3 smoke/subscribe.py 'smoke_gate=rejected:no thanks'
+    uv run python3 smoke/subscribe.py --run a1b2c3d4 ship_it=approved
 
 Without ``--run`` it takes the most recently started run, which is wrong the
-moment two are live — both invocations would answer the same one.
+moment two are live.
 
 Each argument is ``<agent>=<value>``, with an optional ``:<free text>`` for a
 choice that declares ``prompt_for``.
@@ -28,14 +23,14 @@ import pathlib
 import sys
 from typing import TYPE_CHECKING
 
-from ictus.interfaces.conductor.events import history
-from ictus.interfaces.conductor.runs import live_runs, token_for
-from ictus.websocket import WebSocket
+from ictus.interfaces.conductor.control.events import history
+from ictus.interfaces.conductor.control.live import live_runs, token_for
+from ictus.net.websocket import WebSocket
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from ictus.interfaces.conductor.runs import LiveRun
+    from ictus.interfaces.conductor.control.live import LiveRun
 
 TERMINAL = ("workflow_completed", "workflow_failed")
 
@@ -45,8 +40,8 @@ Answers = dict[str, tuple[str, str | None]]
 def answer(data: dict[str, object], answers: Answers) -> dict[str, object]:
     """A ``gate_response`` for the gate in ``data``.
 
-    The field is ``selected_value``, not ``value``, and ``additional_input``
-    goes up as a bare string even though it reads back keyed by ``prompt_for``.
+    The field is ``selected_value``, and ``additional_input`` goes up as a
+    bare string though it reads back keyed by ``prompt_for``.
     """
     agent = str(data.get("agent_name", ""))
     options = data.get("options")
@@ -65,9 +60,7 @@ def answer(data: dict[str, object], answers: Answers) -> dict[str, object]:
 def events(socket: WebSocket, run: LiveRun) -> Iterator[dict[str, object]]:
     """The run's history, then everything after it.
 
-    History comes *after* the socket is open: the socket replays nothing, so
-    seeding first would lose whatever was emitted in between, and a run already
-    parked at a gate would look like a run that is merely quiet.
+    History comes after the socket is open, since the socket replays nothing.
     """
     yield from history(run)
     for raw in socket.messages():

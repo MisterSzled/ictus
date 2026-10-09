@@ -1,15 +1,7 @@
 """Typed references to values produced elsewhere in the graph.
 
-A prompt used to be a string containing an engine's template syntax, which had
-two costs. It put one engine's dialect into user code, where no library refactor
-can reach it. And it made the reference unverifiable except by regular
-expression — the lint that checked whether a referenced field existed did so by
-parsing the emitted format back out of author text.
-
-A ``Ref`` is checked when it is written: the port must exist, and its type comes
-with it. How a reference is spelled is then the backend's problem, and the
-guard a deferred reference needs can be added by the compiler rather than
-remembered by the author.
+A ``Ref`` is checked where it is written: the port must exist, and its type
+comes with it. Spelling and guarding are the backend's problem.
 """
 
 from __future__ import annotations
@@ -24,11 +16,13 @@ from ictus.graph.ports import PortType
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
+    from ictus.graph.composition import WorkflowInput
     from ictus.graph.node import Node
-    from ictus.graph.pipeline import WorkflowInput
 
 __all__ = [
+    "AtLeast",
     "Comparison",
+    "Every",
     "OptionalBlock",
     "Origin",
     "Ref",
@@ -47,12 +41,7 @@ __all__ = [
 
 
 class Origin(StrEnum):
-    """Where a referenced value comes from, which decides how it is addressed.
-
-    Three spellings, mutually exclusive. Modelling them as separate booleans
-    made "a workflow input that is also a loop item" representable, which is
-    nothing, and left every reader to work out the precedence.
-    """
+    """Where a referenced value comes from, which decides how it is addressed."""
 
     NODE = "node"
     WORKFLOW_INPUT = "workflow_input"
@@ -63,10 +52,7 @@ class Origin(StrEnum):
 class Ref:
     """A reference to one output port of one node, a workflow input, or a loop item.
 
-    ``source`` is kept so a lint can check the referenced node is actually in
-    the pipeline — an identity check the old regex over prompt text could never
-    make. ``origin`` is set by whichever constructor made the reference, so
-    nothing has to re-derive which sort it is.
+    ``source`` is kept so a lint can check the node is in the pipeline.
     """
 
     source_id: str
@@ -77,12 +63,7 @@ class Ref:
     element: Mapping[str, PortType] | None = None
     """An array's item shape, carried from the port so a fan-out can check it."""
     fallback: str | None = None
-    """Value to use when this reference resolves to nothing.
-
-    Not decoration: a gate's free-text field exists only on the branch that
-    asked for it, and reading it on any other branch is a hard template error
-    that kills the run. Verified against the engine, not assumed.
-    """
+    """Value to use when this reference resolves to nothing."""
 
     @property
     def from_input(self) -> bool:
@@ -106,9 +87,7 @@ class Ref:
 class OptionalBlock:
     """A run of template parts that only renders once its references resolve.
 
-    Needed because a deferred reference usually comes with prose that makes no
-    sense without it — "a previous draft was rejected with these notes" reads as
-    a lie on the first pass through a loop.
+    For prose that makes no sense without the value it introduces.
     """
 
     parts: tuple[TemplatePart, ...]
@@ -126,16 +105,9 @@ class OptionalBlock:
 class Comparison:
     """A reference tested against a value, for use as a route condition.
 
-    ``tpl(ref)`` interpolates — ``{{ x }}`` — which is right for a boolean and
-    useless for anything else. Choosing a branch by a gate's answer needs the
-    test *inside* the braces, which is a different shape entirely.
-
     Each value type has its own spelling: a string is quoted, an ``int`` goes
-    through ``| int`` for the reason :class:`AtLeast` spells out, and a ``bool``
-    renders Jinja's bare ``true``/``false``. Which one applies is decided by the
-    value's Python type and checked against the port's declared type, so a
-    mismatch — ``0 == '0'``, ``True == 'true'``, both quietly false — is refused
-    where it is written rather than discovered as a branch that never fires.
+    through ``| int``, a ``bool`` renders Jinja's bare literal. The value's
+    Python type must match the port's declared type.
     """
 
     ref: Ref
@@ -151,11 +123,7 @@ class Comparison:
 class Every:
     """A condition holding when every one of several references is true.
 
-    Built from the references themselves rather than written as a string,
-    because the set is usually derived — "every voice on the council is
-    satisfied" is a test over whoever the council was given. Adding a member
-    changes the condition, and a hand-written conjunction is where that stops
-    being true.
+    Built from the references, so a derived set stays in step with the condition.
     """
 
     refs_: tuple[Ref, ...]
@@ -170,9 +138,8 @@ class Every:
 class AtLeast:
     """A condition holding once a numeric reference reaches a threshold.
 
-    The ``| int`` is not optional: a rendered value reaches a route condition as
-    whatever ``_maybe_parse_json`` made of it, and comparing a string to a
-    number in Jinja is a TypeError that kills the run.
+    Rendered with ``| int``: a rendered value arrives as whatever
+    ``_maybe_parse_json`` made of it, and a string-to-number compare raises.
     """
 
     ref: Ref
@@ -193,12 +160,7 @@ class Template:
     parts: tuple[TemplatePart, ...]
 
     def refs(self) -> Iterator[Ref]:
-        """Every reference in the template, nesting included.
-
-        Templates compose: one built for a caller can be dropped whole into
-        another, which is what lets a stage pass a failure report into a helper
-        without flattening it back to a string first.
-        """
+        """Every reference in the template, nesting included."""
         for part in self.parts:
             if isinstance(part, Ref):
                 yield part
@@ -210,20 +172,15 @@ class Template:
         return "".join(p for p in self.parts if isinstance(p, str))
 
 
-# Every part that can hold references inside it. Named once: three separate
-# `refs()` walkers used to list these inline, so a new part type was silently
-# invisible to the lints until someone remembered all three.
+# Every part that can hold references inside it, named once for the `refs()`
+# walkers.
 _COMPOSITE = (Template, OptionalBlock, Comparison, Every, AtLeast)
 
 
 def ref_to(node_id: str, port: str, port_type: PortType) -> Ref:
-    """A reference to a node that does not exist yet.
+    """A reference to a node that does not exist yet, for a loop's back-edge.
 
-    Needed for a loop's back-edge: the producer's prompt reads the reviewer's
-    notes, and the reviewer's prompt reads the producer's draft, so whichever is
-    built first must name the other. Unlike a raw template string this is still
-    checked — the lint resolves ``node_id`` and ``port`` against the finished
-    graph and compares the declared type.
+    The lint resolves it against the finished graph and checks the type.
     """
     return Ref(source_id=node_id, port=port, port_type=port_type)
 
@@ -234,23 +191,14 @@ def tpl(*parts: TemplatePart) -> Template:
 
 
 def as_template(value: str | Template | Ref) -> str | Template:
-    """A bare reference, wrapped so every reader downstream sees one shape.
-
-    Authors reach for ``node.ref("x")`` first, and it is the only spelling a
-    reference lint can see: a hand-written ``{{ ... }}`` is opaque text. So the
-    constructors accept a ``Ref`` and narrow here, rather than making the string
-    the only form that fits.
-    """
+    """A bare reference, wrapped so every reader downstream sees one shape."""
     return tpl(value) if isinstance(value, Ref) else value
 
 
 def equals(ref: Ref, value: str | int | bool) -> Template:
     """A condition that holds when ``ref`` equals ``value``.
 
-    The value's Python type has to match the port's declared type — pass a
-    ``str`` for a string port, an ``int`` for a number, ``True``/``False`` for a
-    boolean. See :func:`_check_comparable` for why a mismatch is refused rather
-    than rendered.
+    The value's Python type must match the port's declared type.
     """
     _check_comparable(ref, value)
     return Template((Comparison(ref=ref, value=value),))
@@ -262,8 +210,7 @@ def not_equals(ref: Ref, value: str | int | bool) -> Template:
     return Template((Comparison(ref=ref, value=value, negated=True),))
 
 
-#: What a value has to be for each port type it can be compared against, and how
-#: the mismatch is spelled for whoever has to fix it.
+#: What a value has to be for each comparable port type, and how to say so.
 _COMPARABLE: dict[PortType, tuple[type, str]] = {
     PortType.STRING: (str, "a quoted string"),
     PortType.NUMBER: (int, "an int"),
@@ -274,12 +221,8 @@ _COMPARABLE: dict[PortType, tuple[type, str]] = {
 def _check_comparable(ref: Ref, value: str | int | bool) -> None:
     """Refuse a comparison whose two sides do not render as the same Jinja type.
 
-    A route condition is evaluated against the value the engine stored, not
-    against its rendered text, so the type is real on that side: a boolean port
-    holds ``True`` and a number holds ``0``. Comparing either to a quoted string
-    produces a condition that is well-formed, never true, and silently sends
-    every run down the catch-all — the failure a route exists to prevent,
-    arriving as a branch nobody took rather than as an error somebody saw.
+    A route condition is evaluated against the stored value, not its rendered
+    text, so a mismatched literal is well-formed and never true.
     """
     expected = _COMPARABLE.get(ref.port_type)
     if expected is None:
@@ -312,7 +255,7 @@ def _kind(value: str | int | bool) -> type:
 
 
 def _rendered(value: str | int | bool) -> str:
-    """What the comparison would have become, for an error the reader can check."""
+    """What the comparison would have rendered as."""
     if isinstance(value, bool):
         return f"== {str(value).lower()}"
     if isinstance(value, int):

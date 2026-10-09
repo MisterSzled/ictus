@@ -1,9 +1,7 @@
 """Typed references.
 
-A reference used to be text inside a prompt, recoverable only by regular
-expression. These tests pin what changed: the port is checked where the
-reference is written, the type travels with it, and a reference into a loop is
-resolved against the finished graph rather than trusted.
+The port is checked where the reference is written, the type travels with it,
+and a forward reference is resolved against the finished graph.
 """
 
 from __future__ import annotations
@@ -154,12 +152,9 @@ class TestGuardIsTheCompilersJob:
     def test_a_gates_free_text_field_is_guarded_segment_by_segment(self) -> None:
         """Guarding only the node name is not enough, and it fails a round late.
 
-        A gate's free-text field exists only on the branch that asked for one.
-        Verified against the engine's own Jinja settings: with just
-        ``review is defined``, the approve branch renders
-        "'dict object' has no attribute 'notes'" — and `| default()` cannot
-        rescue it, because strict undefined raises on the attribute access
-        before the filter runs.
+        With just ``review is defined`` the approve branch renders "'dict
+        object' has no attribute 'notes'", and `| default()` cannot rescue it:
+        strict undefined raises on the attribute access before the filter.
         """
         prompt = self._prompt(self._loop(), "draft")
         assert "review.output.additional_input is defined" in prompt
@@ -205,11 +200,7 @@ class TestGuardIsTheCompilersJob:
 
 
 class TestTypedConditions:
-    """Route conditions built from references rather than written as strings.
-
-    A hand-written conjunction stops matching the thing it was derived from the
-    moment that thing changes — which is exactly when nobody re-reads it.
-    """
+    """Route conditions built from references rather than written as strings."""
 
     @staticmethod
     def _pipeline() -> Pipeline:
@@ -283,14 +274,10 @@ class TestTypedConditions:
 
 
 class TestComparingAgainstNonStrings:
-    """`equals` quotes its value, and a quote against anything but a string is
-    silently false.
+    """`equals` quotes its value, so a quote against a non-string is silently false.
 
-    A route condition is evaluated against the value the engine stored, not its
-    rendered text, so the type is real on that side. The mismatch is well-formed,
-    never true, and sends every run down the catch-all — a branch nobody took
-    rather than an error anybody saw. A script step's `exit_code` is where it
-    bites hardest: the one number a graph routinely routes on.
+    A route condition is evaluated against the stored value, not its rendered
+    text. A script step's `exit_code` is where it bites hardest.
     """
 
     @staticmethod
@@ -372,12 +359,10 @@ class TestComparingAgainstNonStrings:
 class TestConditionalFieldsThatAlwaysRan:
     """A field can be absent even when the step that owns it certainly ran.
 
-    The earlier guard asked only "might this step not have run yet?". A gate
-    every path crosses is never deferred, so its free-text answer was emitted
-    bare — and the branch where nobody typed anything died *after* the human had
-    already answered. Both halves matter: the template guard, and the `?` on the
-    `input:` entry, because a required entry raises at context build before any
-    template runs.
+    A gate every path crosses is never deferred, but its free-text answer
+    exists only on the branch that asked for one. Both halves matter: the
+    template guard, and the `?` on the `input:` entry, since a required entry
+    raises at context build before any template runs.
     """
 
     @staticmethod
@@ -440,10 +425,7 @@ class TestConditionalFieldsThatAlwaysRan:
 class TestConditionsAreFalseNotFatal:
     """A route condition reading a branch this run skipped must not kill the run.
 
-    Conditions took the reference path directly and never asked whether the step
-    behind it had run, so `equals(skipped.ref("x"), "y")` rendered bare and died
-    under StrictUndefined. The only sensible reading of "that value is not there"
-    is that the condition does not hold.
+    "That value is not there" means the condition does not hold.
     """
 
     @staticmethod
@@ -504,10 +486,7 @@ class TestConditionsAreFalseNotFatal:
 class TestSettledStructures:
     """A value Conductor reads back with ``json.loads`` has to be rendered as JSON.
 
-    ``| tojson`` is what makes that round trip lossless. A fallback used to opt
-    the reference out of it, so the branch that had a value emitted a Python
-    repr — single quotes, parse fails, and what survives is a string that looks
-    like data.
+    ``| tojson`` makes the round trip lossless, fallback branch included.
     """
 
     @staticmethod
@@ -562,11 +541,10 @@ class TestSettledStructures:
 
 
 class TestTerminalResults:
-    """``result`` typed the reference out: only a hand-written "{{ ... }}" fitted.
+    """``result`` must take a ``Template``, not only a hand-written "{{ ... }}".
 
-    That is the one spelling no reference lint can see — ``settled_refs`` walks
-    ``Template``s — so the demos taught the form the README's opening claim
-    forbids, because it was the only one that type-checked.
+    A raw string is the one spelling no reference lint can see, since
+    ``settled_refs`` walks ``Template``s.
     """
 
     @staticmethod

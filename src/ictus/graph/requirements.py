@@ -1,13 +1,9 @@
 """What a pipeline needs from its environment before it can run.
 
-Declared where the pipeline is written, checked before it launches. The point is
-that "this needs a GitHub token" stops being knowledge in someone's head and
-becomes a thing the tooling can refuse on.
+Declared where the pipeline is written, checked before it launches.
 
-Secrets are deliberately *not* modelled as values. An ``EnvVar`` names a
-variable that must be present in the environment at run time; ictus checks it is
-set and never reads or emits it. A committed workflow file with a token in it is
-a worse problem than an unconfigured one.
+Secrets are names, never values. An ``EnvVar`` names a variable that must be
+set at run time; ictus checks it is and never reads or emits it.
 """
 
 from __future__ import annotations
@@ -38,8 +34,7 @@ class McpTransport(StrEnum):
 class EnvVar:
     """An environment variable that must be set before the pipeline runs.
 
-    ``purpose`` is shown to whoever has to go and set it, so write it for them:
-    "a GitHub token with repo:read" beats "the token".
+    ``purpose`` is shown to whoever has to go and set it.
     """
 
     name: str
@@ -51,19 +46,9 @@ class EnvVar:
 class Executable:
     """A command that must be on ``PATH`` before the pipeline runs.
 
-    Declared for the same reason an ``EnvVar`` is: so "this pipeline reads
-    Conductor's own source" stops being knowledge in the author's head and
-    becomes something preflight can refuse on.
-
-    The failure this exists to prevent is not a crash. A step told to go and
-    check something against a tool that is not reachable does not fail — it
-    reports that the thing it was checking does not exist, which is a confident
-    wrong answer that costs a whole run to produce and looks exactly like a
-    considered one. Better to refuse at the launch, for free.
-
-    ``probe`` are arguments that prove the command actually answers, run only
-    when preflight is probing. ``--version`` is the usual one. Left empty, the
-    check is presence on ``PATH`` and nothing more.
+    ``probe`` are arguments that prove the command answers, run only when
+    preflight is probing; ``--version`` is the usual one. Left empty, the check
+    is presence on ``PATH``.
     """
 
     name: str
@@ -85,8 +70,7 @@ class Executable:
 class McpServer:
     """An MCP server a pipeline needs access to.
 
-    Transport-specific fields are checked here rather than at emission, so an
-    ``http`` server with no URL is refused while the pipeline is being written.
+    Transport-specific fields are checked here, not at emission.
     """
 
     name: str
@@ -131,7 +115,6 @@ class McpServer:
 
     @property
     def required_env(self) -> tuple[EnvVar, ...]:
-        """Environment variables that must be set for this server to work."""
         return self.env
 
 
@@ -139,31 +122,20 @@ class McpServer:
 class Integration:
     """A third-party service a pipeline talks to, declared where it is written.
 
-    The air gap. Nothing in the composition model knows Slack, or any other
-    service, exists — the same way nothing here knows what an MCP server is for.
-    This holds the *shape* of an integration: what it is called, why it is there,
-    what the environment must supply, and an opaque program that sends one
-    report. Who fills that in lives behind ``ictus.notify``, and a second service
-    is a new module there rather than a new branch anywhere else.
+    The shape only: a name, a purpose, what the environment must supply, and an
+    opaque program that sends one report. The concrete service lives behind
+    ``ictus.notify``; nothing here knows one exists.
 
-    Declared at the top of a pipeline on purpose. A reader should see what a run
-    will talk to before they read what it does, and whoever approves the run is
-    shown the same list at the start gate — a pipeline that reaches outside the
-    machine should say so where it cannot be missed.
-
-    ``env`` names variables, never values. A bot token or a webhook URL is the
-    whole authorisation to act as somebody, so it is read at run time and never
-    written into a pipeline or an emitted workflow.
+    ``env`` names variables, never values.
     """
 
     name: str
     purpose: str
     env: tuple[EnvVar, ...] = ()
     reports: tuple[RunSignal, ...] = ()
-    """Which moments this integration is told about, when it is attached.
+    """Which moments this integration is told about when it is attached.
 
-    Empty means it is attached by hand — a pipeline that announces at points of
-    its own choosing rather than at every gate.
+    Empty means it is attached by hand.
     """
 
     command: str = "python3"
@@ -173,8 +145,7 @@ class Integration:
     threads: bool = False
     """Whether a report can be hung under an earlier one.
 
-    Not every destination has threads, and one that does not gets a flat
-    sequence rather than a broken reference to a parent that never existed.
+    A destination without threads gets a flat sequence.
     """
 
     announces: bool = True
@@ -182,24 +153,16 @@ class Integration:
     parent, optionally carrying buttons."""
 
     comments: bool = False
-    """Whether its program adds a *remark to a named item* — a ticket, an issue,
+    """Whether its program adds a remark to a named item — a ticket, an issue,
     a pull request — addressed by something the graph carries.
 
-    Separate from ``announces`` because the two programs are handed different
-    things, and an integration built for one driven by a step built for the
-    other would be passed arguments in positions that mean something else. The
-    flags make that a refusal while the pipeline is being written; without them
-    it is a report that silently goes nowhere."""
+    Separate from ``announces``: the two programs take different arguments."""
 
     listens: bool = False
-    """Whether a run can be *started* from this destination as well as reported
-    to it.
+    """Whether a run can be started from this destination as well as reported to.
 
-    Not the same capability: sending a report needs somewhere to post, and
-    waiting for one needs a connection held open and a credential that permits
-    it. A destination that can only be written to is refused by ``listen_on``
-    while the pipeline is being written, rather than by a listener that starts,
-    reports itself as listening, and never fires.
+    A different capability: it needs a held connection and a credential that
+    permits one. ``listen_on`` refuses a destination without it.
     """
 
     setup_hint: str = ""
@@ -236,24 +199,13 @@ class Integration:
 
 @dataclass(frozen=True, slots=True)
 class Datasource:
-    """Somewhere a pipeline reads data *from*, declared where it is written.
+    """Somewhere a pipeline reads data from, declared where it is written.
 
-    The same air gap as ``Integration``, one axis over. Nothing in the
-    composition model knows Postgres, or any other engine, exists: this holds
-    the shape — what it is called, why it is there, what the environment must
-    supply, and an opaque program that runs one statement and prints what came
-    back. Which engine that is lives behind ``ictus.sources``, and a second one
-    is a new module there rather than a new branch anywhere else.
+    The shape only: a name, a purpose, what the environment must supply, and an
+    opaque program that runs one statement and prints what came back. The
+    concrete engine lives behind ``ictus.sources``.
 
-    Separate from ``Integration`` because it is the other direction. An
-    integration is an audience and is told things; a datasource is asked things
-    and answers. Conflating them would put ``reports`` and ``threads`` on a
-    database, and a query on a channel.
-
-    ``read_only`` is a claim about the *connection*, not about the statement.
-    It travels with the declaration so a step that must not write can refuse a
-    connection that could, at the point the pipeline is written rather than at
-    the point somebody's generated SQL reaches a production table.
+    ``read_only`` is a claim about the connection, not about the statement.
     """
 
     name: str
@@ -265,8 +217,7 @@ class Datasource:
     """How one statement is run. Opaque here, and never read above ``sources``."""
 
     needs: tuple[Executable, ...] = ()
-    """Commands the program shells out to, so preflight can refuse a machine
-    without them instead of a step discovering it mid-run."""
+    """Commands the program shells out to, for preflight to check."""
 
     setup_hint: str = ""
 

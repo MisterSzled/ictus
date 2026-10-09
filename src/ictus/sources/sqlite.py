@@ -1,13 +1,10 @@
 """Reading from a SQLite file.
 
-No command and no driver: ``sqlite3`` is in the standard library, so this is the
-one source that needs nothing installed. That makes it the one to reach for in a
-demo, a test, or a pipeline whose data is a file somebody dropped next to it.
+No command and no driver: ``sqlite3`` is in the standard library, so this is
+the one source that needs nothing installed.
 
-Read-only twice over. The file is opened through a ``mode=ro`` URI, so the
-connection cannot write even if the statement asks, and ``query_only`` is set on
-top of that. Unlike a server there is no user to drop grants from, so the file's
-own permissions are the layer that corresponds to a read-only database user.
+Read-only twice over: a ``mode=ro`` URI plus ``query_only``. There is no user
+to drop grants from, so the file's own permissions are the outer layer.
 """
 
 from __future__ import annotations
@@ -80,8 +77,8 @@ def main():
         return fail("could not open " + path + " read-only: " + str(exc))
     try:
         link.row_factory = sqlite3.Row
-        # The connection is already read-only; this is the same refusal one
-        # layer in, so a build of sqlite that ignored the URI still refuses.
+        # The same refusal one layer in, so a build that ignored the URI
+        # still refuses.
         link.execute("PRAGMA query_only = ON")
         found = link.execute(sql).fetchall()
     except sqlite3.Error as exc:

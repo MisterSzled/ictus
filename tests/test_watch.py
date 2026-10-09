@@ -20,8 +20,8 @@ from typer.testing import CliRunner
 from ictus import RunSignal
 from ictus.cli import app
 from ictus.interfaces import ENDED, SignalEvent
-from ictus.interfaces.conductor.events import signals_from, watch
-from ictus.interfaces.conductor.runs import LiveRun, live_runs, token_for
+from ictus.interfaces.conductor.control.events import signals_from, watch
+from ictus.interfaces.conductor.control.live import LiveRun, live_runs, token_for
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -140,8 +140,7 @@ def test_a_malformed_event_does_not_stop_the_stream() -> None:
 def test_a_stage_finishing_is_not_the_run_finishing() -> None:
     """A stage is a child workflow emitting its own lifecycle into the same stream.
 
-    Read as the run's, it reported "finished" partway through and stopped
-    watching before the run's later gates and its real end.
+    Read as the run's, it reports "finished" partway through.
     """
     stream: list[dict[str, object]] = [
         {"type": "workflow_completed", "timestamp": 1.0, "data": {"subworkflow_path": ["review"]}},
@@ -307,8 +306,8 @@ def test_a_watcher_whose_run_breaks_unexpectedly_says_so_and_exits(
     def breaks(_: LiveRun) -> list[SignalEvent]:
         raise http.client.IncompleteRead(b"")
 
-    monkeypatch.setattr("ictus.cli.live_runs", lambda: [run])
-    monkeypatch.setattr("ictus.cli.watch_run", breaks)
+    monkeypatch.setattr("ictus.cli.watching.live_runs", lambda: [run])
+    monkeypatch.setattr("ictus.cli.watching.watch_run", breaks)
     result = CliRunner().invoke(app, ["watch"])
     assert result.exit_code == 0
     assert "IncompleteRead" in result.output
@@ -318,11 +317,7 @@ def test_a_watcher_whose_run_breaks_unexpectedly_says_so_and_exits(
 
 
 def _record(directory: Path, run_id: str, **fields: object) -> None:
-    """A record for a live run.
-
-    The pid is this process's, because `live_runs` checks it: a record whose
-    process is gone is not a live run, however recent the file is.
-    """
+    """A record for a live run. The pid is this process's, since `live_runs` checks it."""
     body: dict[str, object] = {
         "run_id": run_id,
         "workflow_name": "smoke-events",
@@ -363,10 +358,8 @@ def test_runs_come_back_oldest_first(tmp_path: Path) -> None:
 
 
 def test_a_record_whose_process_died_is_not_a_live_run(tmp_path: Path) -> None:
-    """The engine archives a record on a graceful exit only. A killed run, a
-    crash or a closed laptop leaves one behind, and five accumulated here in an
-    afternoon — a watcher would have kept dialling ports that stopped answering.
-    """
+    """The engine archives a record on a graceful exit only, so a killed run,
+    a crash or a closed laptop leaves one behind."""
     _record(tmp_path, "zombie", pid=_a_dead_pid())
     assert live_runs(runs_dir=tmp_path) == []
 

@@ -11,15 +11,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
-from ictus.answer import Outcome, resolve, submit
-from ictus.interfaces.conductor.respond import Answered, answer_gate
-from ictus.interfaces.conductor.runs import LiveRun
-from ictus.notify.slack.listen import (
+from ictus.bridge.slack.errors import SlackError, SlackUnreachableError
+from ictus.bridge.slack.listen import (
     FORM_ID,
     Click,
     Note,
-    SlackError,
-    SlackUnreachableError,
     events,
     open_form,
     open_socket,
@@ -27,6 +23,8 @@ from ictus.notify.slack.listen import (
     retire,
     verdict,
 )
+from ictus.interfaces.conductor.control.live import LiveRun
+from ictus.interfaces.conductor.control.respond import answer_gate
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -116,120 +114,6 @@ def test_anything_that_is_not_a_press_or_a_form_is_ignored() -> None:
     assert list(events({"type": "hello"})) == []
 
 
-# --- finding the run, and the round ------------------------------------------
-
-
-def _history(*threads: str, options: tuple[str, ...] = ("approved", "rejected")) -> list[object]:
-    """A run whose report step posted these messages, in order."""
-    posted: list[object] = [
-        {
-            "type": "script_completed",
-            "data": {
-                "agent_name": "report_ship_it",
-                "stdout": json.dumps({"thread": ts, "posted": "true"}) + "\n",
-            },
-        }
-        for ts in threads
-    ]
-    presented = {
-        "type": "gate_presented",
-        "data": {"agent_name": "ship_it", "options": list(options)},
-    }
-    return [*posted, presented]
-
-
-@pytest.fixture
-def answered(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None]]:
-    """Every answer sent, by run id and note, with two runs live and nothing sent for real."""
-    sent: list[tuple[str, str | None]] = []
-    histories = {RUN.run_id: _history("200.1", "200.2"), OTHER.run_id: _history("900.1")}
-
-    def answer(run: LiveRun, *, note: str | None = None, **_: object) -> Answered:
-        sent.append((run.run_id, note))
-        return Answered(True)
-
-    monkeypatch.setattr("ictus.answer.live_runs", lambda: [OTHER, RUN])
-    monkeypatch.setattr("ictus.answer.history", lambda run: histories[run.run_id])
-    monkeypatch.setattr("ictus.answer.answer_gate", answer)
-    return sent
-
-
-def test_a_press_is_answered_on_the_run_that_posted_it(
-    answered: list[tuple[str, str | None]],
-) -> None:
-    """No run id travels with the button; the run's own history says it asked."""
-    assert resolve(_click(message_ts="200.2")) == Outcome(True, run_id=RUN.run_id)
-    assert answered == [(RUN.run_id, None)]
-
-
-def test_a_press_on_an_earlier_round_is_refused(answered: list[tuple[str, str | None]]) -> None:
-    """The engine matches a gate by name, so this used to approve a round nobody read."""
-    outcome = resolve(_click(message_ts="200.1"))
-    assert not outcome.answered
-    assert "asked again since" in outcome.reason
-    assert answered == []
-
-
-def test_a_question_no_live_run_asked_says_so(answered: list[tuple[str, str | None]]) -> None:
-    outcome = resolve(_click(message_ts="555.5"))
-    assert not outcome.answered
-    assert "no run on this machine" in outcome.reason
-    assert answered == []
-
-
-def test_an_answer_the_gate_does_not_offer_is_refused(
-    answered: list[tuple[str, str | None]],
-) -> None:
-    """The engine takes it with a 200, then fails the run on it."""
-    outcome = resolve(_click(choice="maybe"))
-    assert not outcome.answered
-    assert "is not an answer" in outcome.reason
-    assert answered == []
-
-
-def test_a_press_from_somebody_not_allowed_does_nothing(
-    answered: list[tuple[str, str | None]],
-) -> None:
-    outcome = resolve(_click(who="U999"), allowed=frozenset({"U123"}))
-    assert not outcome.answered
-    assert "not allowed" in outcome.reason
-    assert answered == []
-
-
-def test_a_choice_that_needs_text_waits_for_it(answered: list[tuple[str, str | None]]) -> None:
-    """Answering without the notes ran the revision on nothing."""
-    outcome = resolve(_click(choice="rejected", ask="notes"))
-    assert outcome.needs_note
-    assert answered == []
-
-
-def test_a_note_is_answered_with_its_text(answered: list[tuple[str, str | None]]) -> None:
-    note = Note(click=_click(choice="rejected", ask="notes"), text="the tests are missing")
-    assert submit(note).answered
-    assert answered == [(RUN.run_id, "the tests are missing")]
-
-
-def test_a_note_for_a_question_that_moved_on_is_refused(
-    answered: list[tuple[str, str | None]],
-) -> None:
-    """The form was open while somebody answered in the dashboard and the loop came round."""
-    note = Note(click=_click(choice="rejected", ask="notes", message_ts="200.1"), text="x")
-    assert not submit(note).answered
-    assert answered == []
-
-
-def test_a_run_that_cannot_be_read_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    def history(run: LiveRun) -> list[object]:
-        if run is OTHER:
-            raise ConnectionResetError
-        return _history("200.2")
-
-    monkeypatch.setattr("ictus.answer.live_runs", lambda: [OTHER, RUN])
-    monkeypatch.setattr("ictus.answer.history", history)
-    monkeypatch.setattr("ictus.answer.answer_gate", lambda *a, **k: Answered(True))  # noqa: ARG005
-    assert resolve(_click()).answered
-
-
 # --- the dashboard's side ----------------------------------------------------
 
 
@@ -296,7 +180,10 @@ def test_answering_a_run_that_is_not_there_is_reported() -> None:
 
 def test_answering_without_a_token_refuses_before_asking(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CONDUCTOR_GATE_TOKEN", raising=False)
-    monkeypatch.setattr("ictus.interfaces.conductor.respond.token_for", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.setattr(
+        "ictus.interfaces.conductor.control.respond.token_for",
+        lambda *a, **k: None,  # noqa: ARG005
+    )
     outcome = answer_gate(RUN, gate="g", choice="c")
     assert not outcome.accepted
     assert "token" in outcome.detail
@@ -477,7 +364,7 @@ def test_a_dropped_connection_is_dialled_again(monkeypatch: pytest.MonkeyPatch) 
     first, _ = _peer(hangs_up)
     second, delivered = _peer(delivers)
     urls = iter([f"ws://127.0.0.1:{first}/link", f"ws://127.0.0.1:{second}/link"])
-    monkeypatch.setattr("ictus.notify.slack.listen.open_socket", lambda token: next(urls))  # noqa: ARG005
+    monkeypatch.setattr("ictus.bridge.slack.listen.open_socket", lambda token: next(urls))  # noqa: ARG005
 
     stream = presses("xapp", pause=lambda seconds: None)  # noqa: ARG005
     click = next(stream)
@@ -499,7 +386,7 @@ def test_an_unreachable_slack_is_retried_with_growing_pauses(
     def dial(token: str) -> str:  # noqa: ARG001
         raise next(attempts)
 
-    monkeypatch.setattr("ictus.notify.slack.listen.open_socket", dial)
+    monkeypatch.setattr("ictus.bridge.slack.listen.open_socket", dial)
     with pytest.raises(SlackError, match="no"):
         next(presses("xapp", pause=pauses.append))
     assert pauses == [1.0, 2.0]

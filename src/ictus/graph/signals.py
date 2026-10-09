@@ -1,14 +1,10 @@
 """Moments in a run that something outside it may want to hear about.
 
-Named for what happens rather than for what any engine calls it, the way
-``NodeKind`` is. A backend maps these onto its own vocabulary and declares in
-``Capabilities`` which it can report, so subscribing to one the target cannot
-observe is refused while it is being written.
+Named for what happens rather than for what any engine calls it. A backend
+declares in ``Capabilities`` which it can report.
 
-Not a second routing mechanism: a gate's answer and a scope's outcome are
-already edges, and acting on one belongs in the graph where it is costed. This
-is for telling somebody — and for the moments no node can observe, because the
-engine rather than a step is what moved.
+Not a routing mechanism — a gate's answer and a scope's outcome are edges.
+This is for telling somebody, including about moments no node can observe.
 """
 
 from __future__ import annotations
@@ -30,8 +26,7 @@ class RunSignal(StrEnum):
     """A person paused it and it is waiting to be resumed."""
 
     DECISION_NEEDED = "decision_needed"
-    """The one worth notifying on above all others. The run is parked, spending
-    nothing and achieving nothing, until somebody arrives."""
+    """The run is parked, spending nothing, until somebody arrives."""
 
     DECISION_MADE = "decision_made"
     STEP_FAILED = "step_failed"
@@ -43,10 +38,10 @@ class RunSignal(StrEnum):
     ceiling was crossed and nothing about what happened next."""
 
 
-#: What a step can stand in front of, so an attached integration reports it from
-#: inside the run: the start, every gate and question, every way the graph ends.
-#: ``RUN_FAILED`` only partly — an explicit failed exit has a step in front of
-#: it, an engine failure does not. Anything else reaches only ``ictus watch``.
+#: What a step can stand in front of, so an attached integration reports it
+#: from inside the run. ``RUN_FAILED`` only partly: an explicit failed exit
+#: has a step in front of it, an engine failure does not. The rest need
+#: ``ictus watch``.
 ANNOUNCED_BY_STEPS = frozenset(
     {
         RunSignal.RUN_STARTED,

@@ -1,16 +1,10 @@
 """Environment checks that hold whatever executes the graph.
 
-An MCP server is Conductor's business — it is declared in Conductor's runtime
-block and reached the way Conductor reaches it. A command on ``PATH`` is not:
-every engine runs its steps in some process, and a step told to check something
-against a tool that is not installed behaves the same way under all of them.
+A missing command does not surface as a crash: the step runs, the lookup
+fails, and the model reports the thing it was checking as absent.
 
-It behaves badly, which is why this exists. A missing tool does not surface as a
-crash. The step runs, the lookup fails, and the model reports that the thing it
-was checking is absent — a confident wrong answer, indistinguishable in the
-output from a considered one, produced at full price. A council once concluded
-that four engine features were missing on the strength of one import that had
-been run against the wrong interpreter.
+An MCP server is the engine's business and is checked in
+``interfaces.conductor.mcp``.
 """
 
 from __future__ import annotations
@@ -56,7 +50,7 @@ def _probe(tool: Executable, found: str) -> list[PreflightIssue]:
     """Run the tool's own proof that it answers.
 
     On PATH is not the same as working: a console script whose interpreter has
-    been removed is still a file, and still executable, and still fails.
+    gone is still an executable file.
     """
     argv = [found, *tool.probe]
     try:
@@ -96,16 +90,13 @@ def _probe(tool: Executable, found: str) -> list[PreflightIssue]:
 def integration_issues(pipeline: Pipeline) -> list[PreflightIssue]:
     """Every declared integration this machine cannot supply a credential for.
 
-    Offline only, and deliberately: probing would mean posting something to find
-    out, and an integration's endpoint is somewhere people read. A preflight that
-    announced itself in a channel every time anyone checked a pipeline would be
-    turned off, and then the real notification would be ignored with it.
+    Offline only: probing would mean posting something somewhere people read.
     """
     issues: list[PreflightIssue] = []
     for service in pipeline.all_integrations():
         if shutil.which(service.command) is None:
-            # A step that cannot start is the one way a report still fails the
-            # run: the engine raises before the program's own guard can run.
+            # A step that cannot start is the one way a report fails the run:
+            # the engine raises before the program's own guard can run.
             issues.append(
                 PreflightIssue(
                     requirement=f"integrate:{service.name}",
@@ -130,9 +121,7 @@ def integration_issues(pipeline: Pipeline) -> list[PreflightIssue]:
         )
         unseen = sorted(s.value for s in service.reports if s not in ANNOUNCED_BY_STEPS)
         if unseen:
-            # Not blocking: the watcher is a real way to deliver these. Said out
-            # loud because without it they are configured, pass preflight, and
-            # never arrive.
+            # Not blocking: the watcher is a real way to deliver these.
             issues.append(
                 PreflightIssue(
                     requirement=f"integrate:{service.name}",
@@ -151,14 +140,8 @@ def integration_issues(pipeline: Pipeline) -> list[PreflightIssue]:
 def datasource_issues(pipeline: Pipeline) -> list[PreflightIssue]:
     """Every declared source this machine cannot supply a connection for.
 
-    Offline only, like an integration's. Probing would mean opening a
-    connection to a production database to find out whether a pipeline parses,
-    and the one thing worse than a preflight nobody runs is one nobody dares
-    to.
-
-    The commands a source needs are folded into the pipeline's executables when
-    it is declared, so they are checked by ``executable_issues`` and are not
-    repeated here.
+    Offline only. A source's own commands are folded into the pipeline's
+    executables when it is declared, so ``executable_issues`` covers them.
     """
     return [
         PreflightIssue(

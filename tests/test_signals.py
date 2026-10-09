@@ -25,7 +25,7 @@ from ictus import (
 from ictus.errors import CompositionError
 from ictus.interfaces import Capabilities
 from ictus.interfaces.conductor import ConductorBackend
-from ictus.interfaces.conductor.signals import REPORTABLE, SIGNAL_EVENTS, signal_for
+from ictus.interfaces.conductor.control.signals import REPORTABLE, SIGNAL_EVENTS, signal_for
 from ictus.interfaces.environment import integration_issues
 from ictus.lint import lint_pipeline
 from ictus.notify.slack import slack_webhook
@@ -158,9 +158,7 @@ _INTRODUCED = {"mcp_failed": (0, 1, 41)}
 def _installed_engine() -> tuple[str, tuple[int, ...]]:
     """The installed engine's source, and its version.
 
-    Found through the console script, because the engine lives in its own
-    environment and importing it from this one fails — which is a fact about
-    the interpreter asked, not about the engine.
+    Found through the console script: the engine lives in its own environment.
     """
     binary = shutil.which("conductor")
     assert binary is not None
@@ -186,9 +184,8 @@ def _installed_engine() -> tuple[str, tuple[int, ...]]:
 def test_every_mapped_event_is_one_the_installed_engine_emits(backend: ConductorBackend) -> None:
     """What catches the engine renaming an event under us.
 
-    A renamed event is not an error anywhere: the watcher drops names it does
-    not know, so the signal silently stops arriving. This reads the engine's own
-    source for each name rather than trusting a recording that holds only some.
+    The watcher drops names it does not know, so a renamed event silently
+    stops arriving. Reads the engine's own source rather than a recording.
     """
     assert backend is not None
     source, version = _installed_engine()

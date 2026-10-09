@@ -1,8 +1,6 @@
 """The Conductor backend: exact emitted shapes.
 
-These assert the whole dict, not the presence of keys. A presence assertion
-survives every interesting mutation: the previous suite stayed green when
-``Node.to_dict`` was replaced with ``return {}``.
+These assert the whole dict, not the presence of keys.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from ictus import (
 )
 from ictus.errors import CompositionError
 from ictus.interfaces.conductor import ConductorBackend
-from ictus.interfaces.conductor.serialize import dump_yaml
+from ictus.interfaces.conductor.emit.serialize import dump_yaml
 from ictus.stdlib import approval_gate, succeed
 
 if TYPE_CHECKING:
@@ -214,9 +212,8 @@ class TestWorkflowBlock:
     def test_checkpointing_is_on_whether_or_not_a_gate_is_present(self) -> None:
         """The crash worth a checkpoint is the one that raises nothing.
 
-        Conductor saves on failure by itself, so gating this on a gate left the
-        hang and the killed process — the two shapes that raise nothing and so
-        reach no failure handler — with no resume point at all.
+        The engine saves on failure by itself; a hang or a killed process
+        reaches no failure handler.
         """
         plain = Pipeline(pipeline_id="plain")
         plain.add(succeed(node_id="done", reason="d"))
@@ -317,9 +314,8 @@ class TestStages:
 class TestRoundTrip:
     """Emitted YAML must reload to exactly the values that were compiled.
 
-    A long double-quoted scalar wrapped at a line break loses the continuation
-    marker, and reloading turns that break into a space — silently editing the
-    prompt an agent runs. Nothing about that is visible in a diff.
+    A wrapped double-quoted scalar loses its continuation marker, and
+    reloading turns the break into a space.
     """
 
     @staticmethod

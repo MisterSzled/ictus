@@ -1,24 +1,19 @@
 """The statement guard, as source text every engine's program embeds.
 
-One copy, shared, because the interesting cases are the same whatever is
-answering: a second statement hidden behind a comment, a data-modifying CTE
-that opens with ``WITH`` and writes anyway, a keyword that is only a keyword
-when it is not inside a string literal.
+One copy, shared: the cases are the same whatever answers — a second statement
+behind a comment, a data-modifying CTE opening with ``WITH``, a keyword inside
+a string literal.
 
-This is the *third* layer of read-only and the weakest of the three. It catches
-a mistake. It is not what stops somebody determined — that is a database user
-with no write grants, which no program can arrange for itself.
+The third and weakest layer of read-only. It catches a mistake, not somebody
+determined; that is a user with no write grants.
 """
 
 from __future__ import annotations
 
 __all__ = ["GUARD_SOURCE"]
 
-#: Embedded verbatim into each engine's ``python3 -c`` program.
-#:
-#: Written against the standard library only, and with no f-strings carrying
-#: ``{}``: the text is substituted into a template, and a brace here becomes a
-#: placeholder somewhere it was never meant to be one.
+#: Embedded verbatim into each engine's ``python3 -c`` program. Standard
+#: library only, and no ``{}``: the text is substituted into a template.
 GUARD_SOURCE = r'''
 WRITES = (
     "insert", "update", "delete", "merge", "upsert", "replace",
@@ -27,9 +22,8 @@ WRITES = (
     "copy", "call", "do", "execute", "prepare", "lock", "listen",
     "notify", "set", "reset", "begin", "start", "commit", "rollback",
     "savepoint", "attach", "detach", "pragma", "load_extension",
-    # `SELECT ... INTO t` opens with a read and creates a table; `INTO OUTFILE`
-    # and `INTO DUMPFILE` open with a read and write a file. A statement that
-    # passed its first word is not yet a statement that only reads.
+    # `SELECT ... INTO t` creates a table and `INTO OUTFILE` writes a file,
+    # both opening with a read.
     "into", "outfile", "dumpfile",
 )
 OPENERS = ("select", "with", "table", "values", "show", "explain")
@@ -121,8 +115,7 @@ def refuse(sql):
     hit = [word for word in words if word in WRITES]
     if hit:
         # `WITH t AS (DELETE ... RETURNING *) SELECT * FROM t` opens with
-        # `with` and writes, which is why the whole statement is scanned and
-        # not only its first word.
+        # `with` and writes, so the whole statement is scanned.
         return "it names " + ", ".join(sorted(set(hit))) + ", which a read-only query may not do"
     return ""
 '''
